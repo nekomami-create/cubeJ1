@@ -150,12 +150,12 @@ P2P ペアリング AP を消す目的で `gndctrl` を無効化して再起動�
 
 IPv4 は DHCP が動かず取れなかったが、**IPv6 の SLAAC は DHCP を必要としない**。
 Wi-Fi にアソシエートさえしていればアドレスは付く。アドレスは MAC から EUI-64 で
-決まるので、事前に知らなくても計算できる（`6c:21:a2:42:46:58` →
-`fe80::6e21:a2ff:fe42:4658`、グローバルは同じ下位64ビットにルータの prefix）。
+決まるので、事前に知らなくても計算できる（例: `6c:21:a2:00:11:22` →
+`fe80::6e21:a2ff:fe00:1122`、グローバルは同じ下位64ビットにルータの prefix）。
 
 ```
-ping -6 <prefix>:6e21:a2ff:fe42:4658
-adb connect [<prefix>:6e21:a2ff:fe42:4658]:5555
+ping -6 <prefix>:6e21:a2ff:fe00:1122
+adb connect [<prefix>:6e21:a2ff:fe00:1122]:5555
 ```
 
 これで root shell に入り、`stock_gndctrl.rc` を書き戻して復旧した。
