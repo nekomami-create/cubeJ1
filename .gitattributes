@@ -1,0 +1,4 @@
+# Byte-exact checkout on every platform. The payload runs on the Cube's
+# Linux; a CRLF conversion there would break the shell script and the
+# wpa_supplicant config. The .bat is already stored with CRLF.
+* -text

@@ -1,0 +1,71 @@
+#!/system/bin/sh
+#
+# Cube J1 auto-run setup script (local-only variant).
+#
+# Based on the upstream tsuyopon123/cube-j1-mqtt production_tool, with one
+# addition: meter_hub.py is installed and started BEFORE mqtt_bridge.py, so
+# the bridge finds its MQTT sink already listening on 127.0.0.1 and never
+# enters its 15s reconnect-and-log loop.
+#
+# mqtt_bridge.py itself is used completely unmodified.
+
+PT="/tmp/production_tool"
+
+# -- ADB settings -------------------------------------------------------------
+setprop service.adb.tcp.port 5555
+setprop persist.adb.tcp.port 5555
+setprop persist.sys.usb.config mtp,adb
+stop adbd
+sleep 1
+start adbd
+
+# -- Wi-Fi client settings ----------------------------------------------------
+cp $PT/wpa_supplicant.conf /data/misc/wifi/wpa_supplicant.conf
+chmod 660 /data/misc/wifi/wpa_supplicant.conf
+chown system:wifi /data/misc/wifi/wpa_supplicant.conf
+wpa_cli -p /data/misc/wifi/sockets -i wlan0 reconfigure
+sleep 5
+
+# -- Install programs (persistent, survives USB removal) ----------------------
+cp $PT/config.json    /data/local/config.json
+cp $PT/mqtt_bridge.py /data/local/mqtt_bridge.py
+cp $PT/meter_hub.py   /data/local/meter_hub.py
+chmod 600 /data/local/config.json
+chmod 755 /data/local/mqtt_bridge.py
+chmod 755 /data/local/meter_hub.py
+
+# make root filesystem writable so we can update init RC files
+mount -o rw,remount /
+
+# disable wisund (it holds /dev/ttyS1 and blocks our bridge)
+cp $PT/wisund_disabled.rc /system/etc/init/wisund.rc
+
+# disable ndeclite_agent (depends on wisund socket, not needed)
+cp $PT/ndeclite_disabled.rc /system/etc/init/ndeclite_agent.rc
+
+# install both services (auto-start on next boot)
+cp $PT/meter_hub.rc      /system/etc/init/meter_hub.rc
+cp $PT/mqtt_ha_bridge.rc /system/etc/init/mqtt_ha_bridge.rc
+
+# put the root filesystem back to read-only; nothing below needs to write to it
+mount -o ro,remount /
+
+# -- Stop conflicting services ------------------------------------------------
+stop wisund
+stop NDEcLiteAgent
+sleep 2
+
+# -- Start the hub first, then the bridge -------------------------------------
+stop meter_hub 2>/dev/null || true
+sleep 1
+start meter_hub
+sleep 3
+
+stop mqtt_ha_bridge 2>/dev/null || true
+sleep 1
+start mqtt_ha_bridge
+
+# -- Finish LED (blink white) -------------------------------------------------
+cp $PT/led_effect.sh /data/local/led_effect.sh
+chmod 755 /data/local/led_effect.sh
+/data/local/led_effect.sh blink white 10
