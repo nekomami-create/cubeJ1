@@ -1,0 +1,132 @@
+#!/system/bin/sh
+#
+# 復旧用 production_tool（v4）= 元のセットアップ全部 + gndctrl 修復
+#
+# 工場出荷リセットの後でも、リセットせずに自動実行が復活した場合でも、
+# これ1本で完全な状態まで持っていけるようにしてある。
+#
+#   - 最初に赤点灯5秒（実行された証拠。通常運転では出ない色）
+#   - gndctrl.rc は退避があれば復元、無ければリテラルで再生成
+#   - そのうえで元の production_tool と同じ導入を最後まで行う
+#   - ログは書ける場所すべてに出す
+
+# -- 1. 実行の証拠を最優先で出す ----------------------------------------------
+echo 255 > /sys/class/leds/red/brightness
+echo 0   > /sys/class/leds/green/brightness
+echo 0   > /sys/class/leds/blue/brightness
+sleep 5
+
+PT="/tmp/production_tool"
+
+# -- 2. ログ出力先を探す ------------------------------------------------------
+LOGS="/data/local/recovery.log /tmp/recovery.log"
+for d in $(grep -i vfat /proc/mounts 2>/dev/null | awk '{print $2}'); do
+    LOGS="$LOGS $d/recovery.log"
+done
+[ -d /mnt/usb ] && LOGS="$LOGS /mnt/usb/recovery.log"
+
+log() {
+    for f in $LOGS; do
+        echo "$(date '+%m-%d %H:%M:%S') $*" >> "$f" 2>/dev/null
+    done
+}
+
+log "===== recovery v4 start ====="
+log "vfat = $(grep -i vfat /proc/mounts | tr '\n' ';')"
+log "PT = $(ls $PT 2>/dev/null | tr '\n' ' ')"
+
+# -- 3. adb -------------------------------------------------------------------
+setprop service.adb.tcp.port 5555
+setprop persist.adb.tcp.port 5555
+setprop persist.sys.usb.config mtp,adb
+stop adbd
+sleep 1
+start adbd
+log "adbd 再起動"
+
+# -- 4. Wi-Fi 設定（元と同じ手順）--------------------------------------------
+cp $PT/wpa_supplicant.conf /data/misc/wifi/wpa_supplicant.conf
+chmod 660 /data/misc/wifi/wpa_supplicant.conf
+chown system:wifi /data/misc/wifi/wpa_supplicant.conf
+wpa_cli -p /data/misc/wifi/sockets -i wlan0 reconfigure
+log "wpa reconfigure 実行"
+sleep 5
+
+# -- 5. プログラム配置 --------------------------------------------------------
+cp $PT/config.json    /data/local/config.json
+cp $PT/meter_hub.py   /data/local/meter_hub.py
+
+sed -e 's#^LED_R = .*#LED_R = "/dev/null"#' \
+    -e 's#^LED_G = .*#LED_G = "/dev/null"#' \
+    -e 's#^LED_B = .*#LED_B = "/dev/null"#' \
+    $PT/mqtt_bridge.py > /data/local/.bridge.tmp
+if [ "$(wc -c < /data/local/.bridge.tmp)" -gt 20000 ]; then
+    mv /data/local/.bridge.tmp /data/local/mqtt_bridge.py
+else
+    rm -f /data/local/.bridge.tmp
+    cp $PT/mqtt_bridge.py /data/local/mqtt_bridge.py
+fi
+
+chmod 600 /data/local/config.json
+chmod 755 /data/local/mqtt_bridge.py
+chmod 755 /data/local/meter_hub.py
+cp $PT/led_effect.sh /data/local/led_effect.sh
+chmod 755 /data/local/led_effect.sh
+log "プログラム配置完了"
+
+# -- 6. init RC ---------------------------------------------------------------
+mount -o rw,remount /
+log "remount rw = $(grep ' / ' /proc/mounts | tr '\n' ';')"
+
+# gndctrl を必ず有効な状態にする（ここが今回の復旧の要）
+if [ -s /data/local/stock_gndctrl.rc ] && ! grep -q '^ *disabled' /data/local/stock_gndctrl.rc; then
+    cp /data/local/stock_gndctrl.rc /system/etc/init/gndctrl.rc
+    log "gndctrl.rc: 退避から復元"
+else
+    printf 'service gndctrl /usr/sbin/gndctrl\n    class late_start\n    user root\n    group root\n' > /system/etc/init/gndctrl.rc
+    log "gndctrl.rc: リテラルで再生成"
+fi
+log "gndctrl.rc = $(cat /system/etc/init/gndctrl.rc | tr '\n' ';')"
+
+# ファイアウォールも純正へ戻す
+if [ -s /data/local/stock_iptables_firewall.conf ]; then
+    cp /data/local/stock_iptables_firewall.conf /system/etc/iptables_firewall.conf
+else
+    printf '# Configuration file for iptables_firewall.sh\nPOLICY=""\n' > /system/etc/iptables_firewall.conf
+fi
+
+[ -f /data/local/stock_wisund.rc ] || cp /system/etc/init/wisund.rc /data/local/stock_wisund.rc
+[ -f /data/local/stock_ndeclite_agent.rc ] || cp /system/etc/init/ndeclite_agent.rc /data/local/stock_ndeclite_agent.rc
+
+cp $PT/wisund_disabled.rc   /system/etc/init/wisund.rc
+cp $PT/ndeclite_disabled.rc /system/etc/init/ndeclite_agent.rc
+cp $PT/meter_hub.rc         /system/etc/init/meter_hub.rc
+cp $PT/mqtt_ha_bridge.rc    /system/etc/init/mqtt_ha_bridge.rc
+
+mount -o ro,remount /
+log "init RC 配置完了"
+
+# -- 7. サービス --------------------------------------------------------------
+start gndctrl
+stop wisund
+stop NDEcLiteAgent
+sleep 2
+
+stop meter_hub 2>/dev/null || true
+sleep 1
+start meter_hub
+sleep 3
+stop mqtt_ha_bridge 2>/dev/null || true
+sleep 1
+start mqtt_ha_bridge
+
+sleep 20
+log "wlan0 = $(ip -4 addr show wlan0 2>/dev/null | grep inet | tr '\n' ';')"
+log "wpa status = $(wpa_cli -p /data/misc/wifi/sockets -i wlan0 status 2>/dev/null | tr '\n' ';')"
+log "listening = $(netstat -ltn 2>/dev/null | grep -E '8080|5555' | tr '\n' ';')"
+log "gndctrl = $(ps | grep gndctrl | grep -v grep | tr '\n' ';')"
+log "===== recovery v4 done ====="
+sync
+
+# -- 8. 完了合図 --------------------------------------------------------------
+/data/local/led_effect.sh blink white 10
