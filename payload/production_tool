@@ -28,7 +28,23 @@ sleep 5
 
 # -- Install programs (persistent, survives USB removal) ----------------------
 cp $PT/config.json    /data/local/config.json
-cp $PT/mqtt_bridge.py /data/local/mqtt_bridge.py
+# The upstream bridge blinks the LED green/blue for the whole duration of
+# every SKSTACK command (skcommand and SKJOIN, 200ms interval). Until the
+# meter is reachable that is a ~10s burst every ~115s, forever, and its
+# save/restore can also leave the LED dark. Point its LED writes at
+# /dev/null so the stock "green while connected" indication shows through.
+# The copy on the USB stays byte-identical to upstream; only the deployed
+# copy is patched. Falls back to a plain copy if sed produces nothing.
+sed -e 's#^LED_R = .*#LED_R = "/dev/null"#' \
+    -e 's#^LED_G = .*#LED_G = "/dev/null"#' \
+    -e 's#^LED_B = .*#LED_B = "/dev/null"#' \
+    $PT/mqtt_bridge.py > /data/local/.bridge.tmp
+if [ "$(wc -c < /data/local/.bridge.tmp)" -gt 20000 ]; then
+    mv /data/local/.bridge.tmp /data/local/mqtt_bridge.py
+else
+    rm -f /data/local/.bridge.tmp
+    cp $PT/mqtt_bridge.py /data/local/mqtt_bridge.py
+fi
 cp $PT/meter_hub.py   /data/local/meter_hub.py
 chmod 600 /data/local/config.json
 chmod 755 /data/local/mqtt_bridge.py
@@ -37,11 +53,49 @@ chmod 755 /data/local/meter_hub.py
 # make root filesystem writable so we can update init RC files
 mount -o rw,remount /
 
+# keep a copy of the stock init RC files before overwriting them. this is the
+# only moment they still exist untouched. the -f guard matters: without it a
+# second run would overwrite the backup with the already-disabled version.
+[ -f /data/local/stock_wisund.rc ] || cp /system/etc/init/wisund.rc /data/local/stock_wisund.rc
+[ -f /data/local/stock_ndeclite_agent.rc ] || cp /system/etc/init/ndeclite_agent.rc /data/local/stock_ndeclite_agent.rc
+[ -f /data/local/stock_gndctrl.rc ] || cp /system/etc/init/gndctrl.rc /data/local/stock_gndctrl.rc
+[ -f /data/local/stock_iptables_firewall.conf ] || cp /system/etc/iptables_firewall.conf /data/local/stock_iptables_firewall.conf
+[ -f /data/local/stock_iptables_firewall.sh ] || cp /usr/sbin/iptables_firewall.sh /data/local/stock_iptables_firewall.sh
+
 # disable wisund (it holds /dev/ttyS1 and blocks our bridge)
 cp $PT/wisund_disabled.rc /system/etc/init/wisund.rc
 
 # disable ndeclite_agent (depends on wisund socket, not needed)
 cp $PT/ndeclite_disabled.rc /system/etc/init/ndeclite_agent.rc
+
+# gndctrl keeps re-creating a Wi-Fi Direct pairing AP (CubeJ-<mac>, 192.168.100.1/24)
+# for a pairing that can never complete. It cannot be disabled - gndctrl is also the
+# network manager that associates wlan0 at boot, and the USB auto-run trigger. So
+# instead, reject every listening port on any p2p interface, in both address
+# families (see the ip6tables patch just below).
+sed 's|^POLICY=.*|POLICY="p2p+:5555,p2p+:8080,p2p+:8883,p2p+:80,p2p+:443"|' \
+    /data/local/stock_iptables_firewall.conf > /system/etc/.fw.tmp
+if [ -s /system/etc/.fw.tmp ]; then
+    mv /system/etc/.fw.tmp /system/etc/iptables_firewall.conf
+else
+    rm -f /system/etc/.fw.tmp
+fi
+
+# The stock firewall script only ever touches iptables, but adb listens on
+# ":::5555" - so every IPv4 rule above is bypassable over IPv6 link-local, and
+# the pairing AP hands out an IPv6 link-local address to anyone who joins it.
+# Teach the stock script to mirror the same POLICY into ip6tables. Always
+# patched from the pristine backup, so re-running never stacks the edits.
+sed -e 's|^    iptables --flush INPUT$|&\
+    ip6tables --flush INPUT|' \
+    -e 's|^\( *\)iptables \(-I INPUT .*-j REJECT\)$|\1iptables \2\
+\1ip6tables \2|' \
+    /data/local/stock_iptables_firewall.sh > /system/etc/.fwsh.tmp
+if [ "$(wc -c < /system/etc/.fwsh.tmp)" -gt 800 ]; then
+    cp /system/etc/.fwsh.tmp /usr/sbin/iptables_firewall.sh
+    chmod 755 /usr/sbin/iptables_firewall.sh
+fi
+rm -f /system/etc/.fwsh.tmp
 
 # install both services (auto-start on next boot)
 cp $PT/meter_hub.rc      /system/etc/init/meter_hub.rc
@@ -53,6 +107,9 @@ mount -o ro,remount /
 # -- Stop conflicting services ------------------------------------------------
 stop wisund
 stop NDEcLiteAgent
+
+# apply the firewall policy now rather than waiting for the next boot
+/usr/sbin/iptables_firewall.sh -run
 sleep 2
 
 # -- Start the hub first, then the bridge -------------------------------------
