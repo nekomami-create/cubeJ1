@@ -3,11 +3,12 @@
 """
 meter_hub.py - Cube J1 local hub (no Home Assistant, no external broker)
 
-The upstream mqtt_bridge.py is used unmodified. It is pointed at
-127.0.0.1 and publishes there as usual. This process:
+The bridge (this repository's fork of upstream mqtt_bridge.py) is pointed
+at 127.0.0.1 and publishes there. This process:
 
   1. speaks just enough MQTT 3.1.1 server-side to receive those publishes
-  2. keeps the latest reading plus ~24h of history in RAM
+  2. keeps the latest reading, ~24h of per-minute samples, and the meter's
+     half-hour cumulative readings per day, saved under /data/local
   3. serves a phone-friendly page and a JSON API over plain HTTP
 
 Deliberate constraints, because the Cube has Python 2.7 and no package
@@ -19,6 +20,7 @@ Endpoints:
     GET /              phone dashboard (HTML)
     GET /api           latest reading (JSON)
     GET /api/history   ring buffer of recent samples (JSON)
+    GET /api/daily     half-hour history per day, ?days=N (JSON)
     GET /healthz       "ok"
 """
 
@@ -44,6 +46,13 @@ JANITOR_SEC = 300
 DEFAULT_HUB_PORT   = 11883   # not 1883: avoid clashing with anything preinstalled
 DEFAULT_HTTP_PORT  = 8080    # not 80/443: nginx may already hold those
 DEFAULT_HISTORY    = 1440    # 24h at one sample per minute
+
+# Half-hour history from the meter. It only holds about nine days itself, so
+# the Cube keeps what it has seen and the record grows past that window.
+DAILY_PATH    = "/data/local/meter_daily.json"
+DAILY_KEEP    = 400          # days
+RING_PATH     = "/data/local/meter_ring.json"
+RING_SAVE_SEC = 600          # per-minute samples survive a restart, 10 min stale at most
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -77,6 +86,8 @@ class State(object):
         self.history = collections.deque(maxlen=maxlen)
         self.started = time.time()
         self.publishes = 0
+        self.days    = {}      # "YYYY-MM-DD" -> 48 cumulative kWh (or None)
+        self.days_dirty = False
 
     def update(self, key, value):
         with self.lock:
@@ -107,6 +118,51 @@ class State(object):
         with self.lock:
             return list(self.history)
 
+    def set_day(self, date, kwh):
+        with self.lock:
+            old = self.days.get(date)
+            if old is not None:
+                # Keep any slot already known: a later fetch never has less.
+                kwh = [n if n is not None else o for n, o in zip(kwh, old)]
+            self.days[date] = kwh
+            for d in sorted(self.days)[:-DAILY_KEEP]:
+                del self.days[d]
+            self.days_dirty = True
+
+def next_date(d):
+    """'YYYY-MM-DD' -> following day. Noon keeps the arithmetic clear of any
+    timezone offset, whichever the process runs under."""
+    y, m, dd = [int(x) for x in d.split("-")]
+    t = time.mktime((y, m, dd, 12, 0, 0, 0, 0, -1)) + 86400
+    return time.strftime("%Y-%m-%d", time.localtime(t))
+
+def daily_payload(state, limit):
+    """Per-day half-hour usage. use_kwh[i] is consumption from slot i to i+1;
+    the last slot of a day needs the next day's first reading."""
+    with state.lock:
+        days = dict(state.days)
+    out = []
+    for d in sorted(days)[-limit:]:
+        cum = days[d]
+        nxt = days.get(next_date(d))
+        use = []
+        for i in range(48):
+            a = cum[i]
+            b = cum[i + 1] if i < 47 else (nxt[0] if nxt else None)
+            if a is None or b is None or b < a:
+                use.append(None)
+            else:
+                use.append(round(b - a, 4))
+        known = [u for u in use if u is not None]
+        out.append({
+            "date": d,
+            "cum_kwh": cum,
+            "use_kwh": use,
+            "total_kwh": round(sum(known), 3) if known else None,
+            "complete": len(known) == 48,
+        })
+    return {"days": out}
+
 # Topic leaf name -> (key in the JSON API, converter)
 TOPIC_MAP = {
     "power":          ("power_w",            float),
@@ -119,6 +175,17 @@ TOPIC_MAP = {
 def on_publish(state, topic, payload):
     # Home Assistant auto-discovery messages are irrelevant here.
     if topic.startswith("homeassistant/"):
+        return
+    if topic.endswith("/history_day"):
+        try:
+            msg = json.loads(payload)
+            date = str(msg["date"])
+            kwh = msg["kwh"]
+            if len(date) != 10 or not isinstance(kwh, list) or len(kwh) != 48:
+                raise ValueError("unexpected shape")
+            state.set_day(date, [None if v is None else float(v) for v in kwh])
+        except Exception as e:
+            log("history_day rejected: %s" % e)
         return
     leaf = topic.rsplit("/", 1)[-1]
     entry = TOPIC_MAP.get(leaf)
@@ -282,6 +349,18 @@ def handle_http_client(conn, addr, state):
             samples = [list(s) for s in state.get_history()]
             body = json.dumps({"samples": samples}, separators=(",", ":"))
             conn.sendall(http_response("200 OK", "application/json; charset=utf-8", body))
+        elif path in ("/api/daily", "/api/daily/"):
+            limit = DAILY_KEEP
+            query = parts[1].split("?", 1)
+            if len(query) == 2:
+                for kv in query[1].split("&"):
+                    if kv.startswith("days="):
+                        try:
+                            limit = max(1, min(DAILY_KEEP, int(kv[5:])))
+                        except ValueError:
+                            pass
+            body = json.dumps(daily_payload(state, limit), separators=(",", ":"))
+            conn.sendall(http_response("200 OK", "application/json; charset=utf-8", body))
         elif path == "/favicon.svg":
             conn.sendall(http_response("200 OK", "image/svg+xml", FAVICON))
         elif path == "/favicon.ico":
@@ -327,6 +406,58 @@ def trim_log(path, max_bytes, keep_bytes):
         log("janitor: trimmed %s" % path)
     except Exception as e:
         log("janitor: could not trim %s: %s" % (path, e))
+
+def load_json(path):
+    try:
+        f = open(path)
+        try:
+            return json.load(f)
+        finally:
+            f.close()
+    except Exception:
+        return None
+
+def save_json(path, obj):
+    """Write to a temporary file and rename, so a power cut mid-write leaves
+    the previous copy intact rather than a truncated one."""
+    tmp = path + ".tmp"
+    try:
+        f = open(tmp, "w")
+        try:
+            json.dump(obj, f, separators=(",", ":"))
+        finally:
+            f.close()
+        os.rename(tmp, path)
+    except Exception as e:
+        log("save %s failed: %s" % (path, e))
+
+def restore_state(state):
+    days = load_json(DAILY_PATH)
+    if isinstance(days, dict):
+        for d, kwh in days.items():
+            if isinstance(kwh, list) and len(kwh) == 48:
+                state.days[str(d)] = kwh
+    ring = load_json(RING_PATH)
+    if isinstance(ring, list):
+        cutoff = time.time() - 86400
+        for sample in ring:
+            if isinstance(sample, list) and len(sample) == 4 and sample[0] >= cutoff:
+                state.history.append(tuple(sample))
+    log("restored %d day(s) of half-hour history, %d per-minute sample(s)"
+        % (len(state.days), len(state.history)))
+
+def persister(state):
+    last_ring = time.time()
+    while True:
+        time.sleep(30)
+        with state.lock:
+            days = dict(state.days) if state.days_dirty else None
+            state.days_dirty = False
+        if days is not None:
+            save_json(DAILY_PATH, days)
+        if time.time() - last_ring >= RING_SAVE_SEC:
+            save_json(RING_PATH, [list(s) for s in state.get_history()])
+            last_ring = time.time()
 
 def janitor():
     while True:
@@ -386,6 +517,7 @@ def main():
     history_len = int(cfg.get("history_size", DEFAULT_HISTORY))
 
     state = State(history_len)
+    restore_state(state)
     log("=== meter_hub start (mqtt=127.0.0.1:%d http=0.0.0.0:%d history=%d) ==="
         % (hub_port, http_port, history_len))
 
@@ -397,6 +529,10 @@ def main():
     t_jan = threading.Thread(target=janitor)
     t_jan.daemon = True
     t_jan.start()
+
+    t_save = threading.Thread(target=persister, args=(state,))
+    t_save.daemon = True
+    t_save.start()
 
     # HTTP runs on the main thread: if it dies the process exits and init
     # restarts the whole service, which is the behaviour we want.

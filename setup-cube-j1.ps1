@@ -8,7 +8,7 @@
       Home Assistant も MQTTブローカーも常時稼働サーバーも不要。
 
     構成:
-      mqtt_bridge.py (上流のまま) --MQTT--> meter_hub.py --HTTP--> スマホ
+      mqtt_bridge.py (このリポジトリ) --MQTT--> meter_hub.py --HTTP--> スマホ
                               127.0.0.1:11883          0.0.0.0:8080
 
     やらないこと: Bルート開通申請、Cube への挿入と電源投入。
@@ -36,14 +36,13 @@ $PayloadDir     = Join-Path $PSScriptRoot 'payload'
 
 # 上流からそのまま使うファイル
 $FromUpstream = @(
-    'mqtt_bridge.py',
     'led_effect.sh',
     'mqtt_ha_bridge.rc',
     'wisund_disabled.rc',
     'ndeclite_disabled.rc'
 )
 # こちらで用意するファイル（production_tool は上流を差し替える）
-$FromPayload = @('production_tool', 'meter_hub.py', 'meter_hub.rc')
+$FromPayload = @('production_tool', 'meter_hub.py', 'meter_hub.rc', 'mqtt_bridge.py')
 
 # ---- 表示ヘルパ -------------------------------------------------------------
 function Say {
@@ -342,7 +341,7 @@ foreach ($f in $required) {
 }
 
 # Cube 側の Linux が読むテキストは CR が混ざると壊れる
-$mustBeLf = @('production_tool\production_tool', 'production_tool\meter_hub.py',
+$mustBeLf = @('production_tool\production_tool', 'production_tool\meter_hub.py', 'production_tool\mqtt_bridge.py',
               'production_tool\meter_hub.rc', 'production_tool\config.json',
               'production_tool\wpa_supplicant.conf')
 foreach ($f in $mustBeLf) {
