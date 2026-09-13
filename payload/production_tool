@@ -28,18 +28,28 @@ sleep 5
 
 # -- Install programs (persistent, survives USB removal) ----------------------
 cp $PT/config.json    /data/local/config.json
-# The upstream bridge blinks the LED green/blue for the whole duration of
-# every SKSTACK command (skcommand and SKJOIN, 200ms interval). Until the
-# meter is reachable that is a ~10s burst every ~115s, forever, and its
-# save/restore can also leave the LED dark. Point its LED writes at
-# /dev/null so the stock "green while connected" indication shows through.
-# The copy on the USB stays byte-identical to upstream; only the deployed
-# copy is patched. Falls back to a plain copy if sed produces nothing.
+# Two fixes are applied to the upstream bridge on the way in. The copy on the
+# USB stays byte-identical to upstream; only the deployed copy is patched.
+#
+# 1. LED. The bridge blinks green/blue for the whole duration of every SKSTACK
+#    command, so until the meter is reachable that is a ~10s burst every ~115s,
+#    forever, and its save/restore can leave the LED dark. Point its LED writes
+#    at /dev/null and the stock "green while connected" indication shows through.
+#
+# 2. Scan deadline. skscan() waited `duration` SECONDS, but duration is the
+#    SKSTACK parameter: the module scans 0.01*(2^duration+1) seconds PER CHANNEL,
+#    and the FFFFFFFF mask covers the whole 33-60 band. So every scan was
+#    abandoned before the sweep finished, and a meter on a high channel was
+#    never reached. Ours sits on 0x2F and went unseen through 776 scan cycles;
+#    with the corrected deadline it was found on the first duration-6 attempt.
 sed -e 's#^LED_R = .*#LED_R = "/dev/null"#' \
     -e 's#^LED_G = .*#LED_G = "/dev/null"#' \
     -e 's#^LED_B = .*#LED_B = "/dev/null"#' \
+    -e 's|^\( *\)deadline  = time\.time() + duration$|\1deadline  = time.time() + 0.01 * (2 ** duration + 1) * 32 + 10|' \
     $PT/mqtt_bridge.py > /data/local/.bridge.tmp
-if [ "$(wc -c < /data/local/.bridge.tmp)" -gt 20000 ]; then
+if [ "$(wc -c < /data/local/.bridge.tmp)" -gt 20000 ] \
+   && grep -q '2 \*\* duration' /data/local/.bridge.tmp \
+   && grep -q 'LED_R = "/dev/null"' /data/local/.bridge.tmp; then
     mv /data/local/.bridge.tmp /data/local/mqtt_bridge.py
 else
     rm -f /data/local/.bridge.tmp
