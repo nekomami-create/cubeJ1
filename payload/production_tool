@@ -28,8 +28,8 @@ sleep 5
 
 # -- Install programs (persistent, survives USB removal) ----------------------
 cp $PT/config.json    /data/local/config.json
-# Two fixes are applied to the upstream bridge on the way in. The copy on the
-# USB stays byte-identical to upstream; only the deployed copy is patched.
+# Fixes applied to the upstream bridge on the way in. The copy on the USB stays
+# byte-identical to upstream; only the deployed copy is patched.
 #
 # 1. LED. The bridge blinks green/blue for the whole duration of every SKSTACK
 #    command, so until the meter is reachable that is a ~10s burst every ~115s,
@@ -42,14 +42,36 @@ cp $PT/config.json    /data/local/config.json
 #    abandoned before the sweep finished, and a meter on a high channel was
 #    never reached. Ours sits on 0x2F and went unseen through 776 scan cycles;
 #    with the corrected deadline it was found on the first duration-6 attempt.
+#
+# 3. Scan ceiling. With honest deadlines, durations 9 and 10 take about 2 and
+#    6 minutes, so one 4..10 cycle ran 11 minutes. Stop at 8: a cycle is under
+#    3 minutes, and a meter that 8 cannot hear is not usable anyway.
+#
+# 4. Stuck sessions. After SKJOIN the main loop only re-joined on an exception;
+#    an ERXUDP timeout was logged and ignored. On a marginal link the join can
+#    succeed while every data exchange fails, and the bridge then sat
+#    "connected" and mute indefinitely (seen for 10+ minutes). Five consecutive
+#    timeouts now raise, which sends it through the existing reconnect path.
 sed -e 's#^LED_R = .*#LED_R = "/dev/null"#' \
     -e 's#^LED_G = .*#LED_G = "/dev/null"#' \
     -e 's#^LED_B = .*#LED_B = "/dev/null"#' \
     -e 's|^\( *\)deadline  = time\.time() + duration$|\1deadline  = time.time() + 0.01 * (2 ** duration + 1) * 32 + 10|' \
+    -e 's|^SCAN_RETRY_LIMIT = 10$|SCAN_RETRY_LIMIT = 8|' \
+    -e 's|^    last_ping = time\.time()$|    last_ping = time.time()\
+    misses    = 0|' \
+    -e 's|^                if data:$|                if data:\
+                    misses = 0|' \
+    -e 's|^                    log("No ERXUDP response (timeout)")$|                    misses += 1\
+                    log("No ERXUDP response (timeout) [{}/5]".format(misses))\
+                    if misses >= 5:\
+                        misses = 0\
+                        raise RuntimeError("5 consecutive ERXUDP timeouts")|' \
     $PT/mqtt_bridge.py > /data/local/.bridge.tmp
 if [ "$(wc -c < /data/local/.bridge.tmp)" -gt 20000 ] \
    && grep -q '2 \*\* duration' /data/local/.bridge.tmp \
-   && grep -q 'LED_R = "/dev/null"' /data/local/.bridge.tmp; then
+   && grep -q 'LED_R = "/dev/null"' /data/local/.bridge.tmp \
+   && grep -q '^SCAN_RETRY_LIMIT = 8$' /data/local/.bridge.tmp \
+   && grep -q 'misses >= 5' /data/local/.bridge.tmp; then
     mv /data/local/.bridge.tmp /data/local/mqtt_bridge.py
 else
     rm -f /data/local/.bridge.tmp
