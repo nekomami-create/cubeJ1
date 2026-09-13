@@ -292,10 +292,10 @@ SKSCAN 2 FFFFFFFF 6 0
 EVENT 20 ...
 EPANDESC
   Channel:2F      メーターのチャンネル
-  Pan ID:4211
-  Addr:00808700301F4211
+  Pan ID:xxxx
+  Addr:xxxxxxxxxxxxxxxx
   LQI:93          20〜30以下だと電波が弱すぎる。93 は良好
-  PairID:00E724DA BルートID末尾8桁と一致するはず
+  PairID:xxxxxxxx BルートID末尾8桁と一致するはず（ここが要点）
 EVENT 22 ...
 ```
 
@@ -381,7 +381,7 @@ adb reboot
 ### 実機で確認済み（2026-09-13、Bルート開通）
 
 - スマートメーターへの接続（`SKJOIN: connected`）と実測値の取得
-- メーターは チャンネル 0x2F / PAN ID 4211 / LQI 93
+- メーターは帯域の後ろ寄り（チャンネル 0x2F）、LQI 93 と良好
 - 上流の `skscan()` のスキャン期限バグを特定して修正（「つながらないとき」）
 - `SKSETPWD` / `SKSETRBID` はいずれも `OK` を返すことを直接確認
 - ED スキャンで受信系と帯域（33〜60ch）が正常であることを確認
