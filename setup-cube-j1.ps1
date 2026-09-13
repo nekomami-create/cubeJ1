@@ -199,7 +199,7 @@ $brId  = Read-Value  -Label '  Bルート認証ID (32文字)' -Validate $ValidBr
 $brPwd = Read-Secret -Label '  Bルートパスワード (12文字)' -Validate $ValidBrPwd -Hint '12文字のはずです。'
 
 Say ''
-Say '  [自宅 Wi-Fi (2.4GHz / WPA-PSK)]' 'White'
+Say '  [自宅 Wi-Fi (WPA-PSK / 2.4GHz・5GHz)]' 'White'
 $ssid    = Read-Value  -Label '  SSID'
 $wifiPsk = Read-Secret -Label '  Wi-Fi パスワード' -Validate $ValidPsk -Hint 'WPA-PSK は 8〜63 文字です。'
 

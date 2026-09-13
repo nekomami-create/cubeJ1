@@ -10,11 +10,17 @@
     /data/misc/wifi/ へ配置して wpa_cli reconfigure を呼ぶので、
     差し替えて電源を入れるだけで反映される。
 
-    注意: Cube は 2.4GHz / WPA-PSK のみ。5GHz は掴めない。
+    注意: Cube は WPA-PSK のみ。周波数帯は仕様上 2.4GHz（b/g/n）と
+    5GHz（ac）の両対応。
 #>
 [CmdletBinding()]
 param(
-    [string]$Drive
+    [string]$Drive,
+    # -Add: 既存の接続先を残したまま追加する（同じ SSID があれば置き換え）。
+    # 何も付けなければ従来どおり、接続先をこの1つに置き換える。
+    [switch]$Add,
+    # 大きいほど優先。-Add で既存の priority 無しの接続先は 1 として扱う。
+    [int]$Priority = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,8 +64,8 @@ function Read-Secret {
 # wpa_supplicant のダブルクォート文字列内エスケープ（\ を先に、次に "）
 function ConvertTo-WpaString {
     param([string]$Value)
-    $escaped = $Value -replace '\', '\'
-    $escaped -replace '"', '\"'
+    # 正規表現を通さない String.Replace で置き換える（-replace '\' は不正な正規表現）
+    $Value.Replace('\', '\\').Replace('"', '\"')
 }
 
 function Write-LfFile {
@@ -75,7 +81,7 @@ Head 'Cube J1 Wi-Fi 接続先の書き換え'
 Say '  書き換えるのは wpa_supplicant.conf だけです。'
 Say '  Bルート認証情報（config.json）には触れません。'
 Say ''
-Say '  Cube は 2.4GHz / WPA-PSK のみ対応です。5GHz は掴めません。' 'Yellow'
+Say '  Cube は WPA-PSK のみ対応です（2.4GHz / 5GHz とも仕様上は可）。' 'Yellow'
 
 # ---- USB の選択 -------------------------------------------------------------
 Head '1. 書き込み先の USB'
@@ -102,7 +108,7 @@ Ok "書き込み先: $ptDir"
 # ---- 入力 -------------------------------------------------------------------
 Head '2. 接続先の Wi-Fi'
 Say ''
-$ssid = Read-Value  -Label '  SSID (2.4GHz)'
+$ssid = Read-Value  -Label '  SSID'
 $psk  = Read-Secret -Label '  パスワード' -Validate $ValidPsk -Hint 'WPA-PSK は 8〜63 文字です。'
 
 # ---- 生成 -------------------------------------------------------------------
@@ -114,16 +120,34 @@ if (Test-Path $conf) {
     Ok "既存のものを wpa_supplicant.conf.bak へ退避"
 }
 
-$text = @"
-ctrl_interface=/data/misc/wifi/sockets
-update_config=1
-
+# scan_ssid=1 は SSID を隠した（ステルス）AP にも名前を指定して探しに行く指定。
+# 隠していない AP でも害は無いので常に付ける。
+$newBlock = @"
 network={
         ssid="$(ConvertTo-WpaString $ssid)"
         psk="$(ConvertTo-WpaString $psk)"
         key_mgmt=WPA-PSK
+        scan_ssid=1
+        priority=$Priority
 }
 "@
+
+$blocks = @()
+if ($Add -and -not $bak) { Say '  既存の wpa_supplicant.conf が無いので、この1件だけで作ります' 'Yellow' }
+if ($Add -and $bak -and (Test-Path $bak)) {
+    $old = [IO.File]::ReadAllText($bak, (New-Object Text.UTF8Encoding($false))) -replace "`r", ''
+    $want = 'ssid="' + (ConvertTo-WpaString $ssid) + '"'
+    foreach ($m in [regex]::Matches($old, '(?s)network=\{.*?\n\}')) {
+        $b = $m.Value
+        if ($b.Contains($want)) { Say "  同じ SSID の既存設定は置き換えます" 'Yellow'; continue }
+        if ($b -notmatch '(?m)^\s*priority=') { $b = $b -replace '\n\}$', "`n        priority=1`n}" }
+        $blocks += $b
+    }
+    Ok ("既存の接続先 {0} 件を残します" -f $blocks.Count)
+}
+$blocks += $newBlock
+
+$text = "ctrl_interface=/data/misc/wifi/sockets`nupdate_config=1`n`n" + ($blocks -join "`n`n") + "`n"
 Write-LfFile $conf $text
 
 # ---- 検証 -------------------------------------------------------------------
@@ -154,6 +178,6 @@ Say '  2. Cube の電源を抜き、USB を挿して電源を入れる' 'White'
 Say '  3. 起動時に production_tool がこの設定を反映し、wpa_cli reconfigure を呼びます' 'White'
 Say '  4. 2〜3分待ってから、LAN 上に現れるか確認してください' 'White'
 Say ''
-Say '  繋がらないときは、移動先に 2.4GHz の電波が届いているかを' 'Yellow'
-Say '  スマホなどで確かめてください。Cube は 5GHz を掴めません。' 'Yellow'
+Say '  繋がらないときは、移動先にその SSID の電波が届いているかを' 'Yellow'
+Say '  スマホなどで確かめてください。' 'Yellow'
 Write-Host ''

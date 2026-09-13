@@ -532,6 +532,29 @@ def fetch_history_day(fd, ipv6, tid, day):
 def jst_date(ts, days_ago=0):
     return time.strftime("%Y-%m-%d", time.gmtime(ts + JST_OFFSET - days_ago * 86400))
 
+HISTORY_SETTLE = 90   # s after a half-hour boundary before the meter has the new record
+
+def settled(ts):
+    """True once the meter has had time to write the half-hour just ended."""
+    return (int(ts) + JST_OFFSET) % 1800 > HISTORY_SETTLE
+
+def queue_history(now, hist_date, hist_slot, pending_days):
+    """Add the meter days that need fetching now to pending_days, and return
+    the (hist_date, hist_slot) to remember once nothing is pending.
+
+    A half-hour only counts as handled after it has settled. Marking it any
+    earlier skips the refresh for good: polls are about a minute apart, so the
+    first one after a boundary nearly always falls inside the settle window."""
+    today = jst_date(now)
+    slot = int((now + JST_OFFSET) // 1800)
+    if hist_date is not None and today != hist_date:
+        pending_days.update([0, 1])          # yesterday is complete now
+    elif slot != hist_slot and settled(now):
+        pending_days.add(0)                  # a new half-hour was recorded
+    if settled(now):
+        return today, slot
+    return hist_date, hist_slot
+
 def near_jst_midnight(ts, margin=120):
     """The meter rolls its day index at Japan midnight. Stay clear of it so a
     fetch is never attributed to the wrong date."""
@@ -911,13 +934,7 @@ def main():
             # with the first successful reading.
             now = time.time()
             if unit_seen and not near_jst_midnight(now):
-                today = jst_date(now)
-                slot = int((now + JST_OFFSET) // 1800)
-                if hist_date is not None and today != hist_date:
-                    pending_days.update([0, 1])      # yesterday is complete now
-                elif (hist_slot is not None and slot != hist_slot
-                      and (now + JST_OFFSET) % 1800 > 90):
-                    pending_days.add(0)              # a new half-hour was recorded
+                mark = queue_history(now, hist_date, hist_slot, pending_days)
                 for day in sorted(pending_days, reverse=True)[:HISTORY_PER_LOOP]:
                     tid, raw = fetch_history_day(fd, ipv6, tid, day)
                     if raw is None:
@@ -929,8 +946,7 @@ def main():
                         date, len([v for v in raw if v is not None])))
                     pending_days.discard(day)
                 if not pending_days:
-                    hist_date = today
-                    hist_slot = slot
+                    hist_date, hist_slot = mark
 
             if time.time() - last_ping > 50:
                 mqtt.ping()

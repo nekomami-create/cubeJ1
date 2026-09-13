@@ -19,6 +19,11 @@ stop adbd
 sleep 1
 start adbd
 
+# -- Optional Wi-Fi survey ----------------------------------------------------
+# Only when wifi_probe.sh was put on the stick. Runs before the settings below
+# are reloaded, so it reports what the Cube sees from where it stands now.
+[ -f $PT/wifi_probe.sh ] && sh $PT/wifi_probe.sh
+
 # -- Wi-Fi client settings ----------------------------------------------------
 cp $PT/wpa_supplicant.conf /data/misc/wifi/wpa_supplicant.conf
 chmod 660 /data/misc/wifi/wpa_supplicant.conf
