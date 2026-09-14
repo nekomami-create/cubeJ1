@@ -1,0 +1,5 @@
+service blueye /usr/sbin/blueye
+    class late_start
+    disabled
+    group root system readproc
+    seclabel u:r:shell:s0

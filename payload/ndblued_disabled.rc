@@ -1,0 +1,5 @@
+service ndblued /usr/sbin/ndblued
+    class late_start
+    disabled
+    group root system readproc
+    seclabel u:r:shell:s0

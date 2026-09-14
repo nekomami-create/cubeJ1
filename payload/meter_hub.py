@@ -21,6 +21,8 @@ Endpoints:
     GET /api           latest reading (JSON)
     GET /api/history   ring buffer of recent samples, ?since=TS (JSON)
     GET /api/tariff    electricity price table for the estimate (JSON)
+    GET /api/ble       latest BLE monitor state (JSON)
+    GET /api/ble/history  devices per kind in 10-minute buckets, ?days=N (JSON)
     GET /api/daily     half-hour history per day, ?days=N (JSON)
     GET /healthz       "ok"
 """
@@ -60,6 +62,13 @@ RING_PATH     = "/data/local/meter_ring.json"
 # the Cube restarts unexpectedly. The half-hour record is unaffected — it
 # lives in its own file and is written when it changes.
 RING_SAVE_BASE_SEC = 600     # at the 1440-sample default: 10 min stale at most
+
+# BLE monitor. ble_monitor.py publishes what it hears every 30 s on
+# cubej/ble/state; the hub keeps the latest message in memory and, for the
+# long view, the largest device count per kind in each 10-minute bucket.
+BLE_HIST_PATH  = "/data/local/ble_hist.json"
+BLE_BUCKET_SEC = 600
+BLE_HIST_DAYS  = 28
 
 # Electricity price, used only by the dashboard to show an estimate.
 # Built in: TEPCO 電化上手 at 7-10kVA, checked on tepco.co.jp on 2026-09-13.
@@ -117,6 +126,26 @@ class State(object):
         self.publishes = 0
         self.days    = {}      # "YYYY-MM-DD" -> 48 cumulative kWh (or None)
         self.days_dirty = False
+        self.ble     = None    # latest cubej/ble/state message
+        self.ble_hist = []     # [bucket_ts, {kind: max devices}]
+
+    def set_ble(self, msg):
+        ts = int(msg.get("ts") or time.time())
+        bucket = ts - ts % BLE_BUCKET_SEC
+        counts = {}
+        for k, v in (msg.get("counts") or {}).items():
+            counts[str(k)] = int(v)
+        with self.lock:
+            self.ble = msg
+            if self.ble_hist and self.ble_hist[-1][0] == bucket:
+                row = self.ble_hist[-1][1]
+                for k, v in counts.items():
+                    row[k] = max(row.get(k, 0), v)
+            else:
+                self.ble_hist.append([bucket, counts])
+                cutoff = bucket - BLE_HIST_DAYS * 86400
+                while self.ble_hist and self.ble_hist[0][0] < cutoff:
+                    self.ble_hist.pop(0)
 
     def update(self, key, value):
         with self.lock:
@@ -215,6 +244,15 @@ def on_publish(state, topic, payload):
             state.set_day(date, [None if v is None else float(v) for v in kwh])
         except Exception as e:
             log("history_day rejected: %s" % e)
+        return
+    if topic.endswith("/ble/state"):
+        try:
+            msg = json.loads(payload)
+            if not isinstance(msg, dict) or not isinstance(msg.get("devices"), list):
+                raise ValueError("unexpected shape")
+            state.set_ble(msg)
+        except Exception as e:
+            log("ble state rejected: %s" % e)
         return
     leaf = topic.rsplit("/", 1)[-1]
     entry = TOPIC_MAP.get(leaf)
@@ -401,6 +439,26 @@ def handle_http_client(conn, addr, state):
                             pass
             body = json.dumps(daily_payload(state, limit), separators=(",", ":"))
             conn.sendall(http_response("200 OK", "application/json; charset=utf-8", body))
+        elif path in ("/api/ble", "/api/ble/"):
+            with state.lock:
+                msg = state.ble
+            body = json.dumps({"state": msg, "now": int(time.time())}, separators=(",", ":"))
+            conn.sendall(http_response("200 OK", "application/json; charset=utf-8", body))
+        elif path in ("/api/ble/history", "/api/ble/history/"):
+            days = 7
+            query = parts[1].split("?", 1)
+            if len(query) == 2:
+                for kv in query[1].split("&"):
+                    if kv.startswith("days="):
+                        try:
+                            days = max(1, min(BLE_HIST_DAYS, int(kv[5:])))
+                        except ValueError:
+                            pass
+            cutoff = time.time() - days * 86400
+            with state.lock:
+                rows = [[r[0], dict(r[1])] for r in state.ble_hist if r[0] >= cutoff]
+            body = json.dumps({"bucket_sec": BLE_BUCKET_SEC, "rows": rows}, separators=(",", ":"))
+            conn.sendall(http_response("200 OK", "application/json; charset=utf-8", body))
         elif path in ("/api/tariff", "/api/tariff/"):
             # Read on every request so an edited tariff.json needs no restart.
             body = json.dumps(load_tariff(), separators=(",", ":"))
@@ -516,6 +574,14 @@ def restore_state(state):
         for sample in ring:
             if isinstance(sample, list) and len(sample) == 4 and sample[0] >= cutoff:
                 state.history.append(tuple(sample))
+    hist = load_json(BLE_HIST_PATH)
+    if isinstance(hist, list):
+        cutoff = time.time() - BLE_HIST_DAYS * 86400
+        for row in hist:
+            if (isinstance(row, list) and len(row) == 2 and isinstance(row[1], dict)
+                    and isinstance(row[0], (int, float)) and row[0] >= cutoff):
+                state.ble_hist.append([int(row[0]), row[1]])
+    log("restored %d BLE count bucket(s)" % len(state.ble_hist))
     log("restored %d day(s) of half-hour history, %d per-minute sample(s)"
         % (len(state.days), len(state.history)))
 
@@ -534,6 +600,10 @@ def persister(state):
             save_json(DAILY_PATH, days)
         if time.time() - last_ring >= ring_save_sec(state):
             save_json(RING_PATH, [list(s) for s in state.get_history()])
+            with state.lock:
+                hist = [[r[0], dict(r[1])] for r in state.ble_hist]
+            if hist:
+                save_json(BLE_HIST_PATH, hist)
             last_ring = time.time()
 
 def janitor():
@@ -644,6 +714,9 @@ PAGE = """<!doctype html>
   --deemph:#898781;
   --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
   --tipbg:#0b0b0b; --tipfg:#ffffff; --tipdim:#c3c2b7;
+  /* categorical, validated order (dataviz palette). Kind -> fixed slot. */
+  --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
+  --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#898781;
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -653,6 +726,8 @@ PAGE = """<!doctype html>
     --grid:#2c2c2a; --base:#383835; --ring:rgba(255,255,255,.10); --hover:rgba(255,255,255,.06);
     --s1:#3987e5; --s1wash:rgba(57,135,229,.12); --s1soft:rgba(57,135,229,.42);
     --tipbg:#ffffff; --tipfg:#0b0b0b; --tipdim:#52514e;
+    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500;
+    --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#898781;
   }
 }
 *{box-sizing:border-box}
@@ -680,6 +755,15 @@ body{
 .tiles.in{margin:4px 0 6px}
 .tiles.in .tile{background:var(--plane);border-color:transparent}
 .note{font-size:11.5px;color:var(--ink2);margin:4px 0 8px}
+.hero.mini{padding:2px 2px 8px}
+.hero.mini .value{font-size:clamp(34px,10vw,44px)}
+.bars{display:flex;flex-direction:column;gap:6px;margin:2px 0 10px}
+.brow{display:grid;grid-template-columns:14px 1fr auto;align-items:center;gap:8px;font-size:13px}
+.brow .sw{width:10px;height:10px;border-radius:3px;flex:none}
+.brow .lbl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.brow .track{grid-column:2 / 4;height:6px;border-radius:3px;background:var(--plane);overflow:hidden;margin-top:-2px}
+.brow .fill{height:100%;border-radius:3px}
+.brow .cnt{font-variant-numeric:tabular-nums;color:var(--ink2)}
 .tile .k{font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile .v{font-size:22px;font-weight:600;margin-top:2px;white-space:nowrap}
 .tile .v small{font-size:12px;font-weight:500;color:var(--ink2);margin-left:2px}
@@ -801,6 +885,15 @@ footer{text-align:center;font-size:11px;color:var(--muted);margin-top:16px}
     </div>
   </section>
 
+  <figure class="card" id="cardBle" hidden>
+    <div class="cap"><h2>近くの BLE 機器</h2><span class="sub" id="bleSub"></span></div>
+    <div class="hero mini"><div class="value"><span id="bleTotal">--</span><span class="u">台</span></div></div>
+    <div id="bleKinds" class="bars"></div>
+    <div class="chart" id="bleChart" tabindex="0" role="img" aria-label="種類ごとの台数の推移"></div>
+    <details><summary>いま見えている機器</summary><div class="tw" id="bleTable"></div>
+      <p class="note">スマホやタグが出す電波を数えています。プライバシー保護でアドレスは数分ごとに変わるため、同じ機器を続けて数えられないことがあります。近所の機器も混じります。個体の特定はしません。</p></details>
+  </figure>
+
   <footer>Cube J1 ローカル電力モニタ</footer>
 </main>
 
@@ -816,6 +909,7 @@ var S = {
   hist: [], histMax: 0, histOkAt: 0,
   daily: null, dailyOkAt: 0, dailySlot: -1,
   tariff: null,
+  ble: null, bleHist: null,
   busy: {},
   ch: { slot: {sel: -1}, power: {sel: null, idx: -1}, daily: {sel: -1} }
 };
@@ -1071,6 +1165,27 @@ function rateOf(band, key){
   if (TF.summer_months.indexOf(m) >= 0 && TF.summer_rates && isNum(TF.summer_rates[band])) return TF.summer_rates[band];
   return TF.rates[band];
 }
+/* The clock hours each band covers, read straight from tariff.hours[0..23],
+   so the label always matches the rate it prices. "23〜7時", "7〜10・17〜23時". */
+function bandRanges(TF){
+  var by = {};
+  for (var h = 0; h < 24; h++){ var b = TF.hours[h]; (by[b] = by[b] || []).push(h); }
+  var out = {};
+  for (var b in by){
+    var hs = by[b], runs = [], start = hs[0], prev = hs[0], i;
+    for (i = 1; i < hs.length; i++){
+      if (hs[i] === prev + 1) prev = hs[i];
+      else { runs.push([start, prev + 1]); start = prev = hs[i]; }
+    }
+    runs.push([start, prev + 1]);
+    // A band that touches both midnight ends (e.g. 夜間) wraps into one span.
+    if (runs.length > 1 && runs[0][0] === 0 && runs[runs.length - 1][1] === 24){
+      runs[0][0] = runs.pop()[0];
+    }
+    out[b] = runs.map(function(r){ return r[0] + "〜" + (r[1] % 24) + "時"; }).join("・");
+  }
+  return out;
+}
 /* One day's price. extra is usage the half-hour history does not hold yet
    (today's live meter total past the last recorded slot), charged at the
    rate of extraSlot. */
@@ -1186,10 +1301,14 @@ function renderCost(){
   setNote("cMonthD", null, md(P.start) + "〜" + md(P.end));
   $("costSub").textContent = TF.name || "";
 
-  var rows = [], order = TF.band_order || [];
+  var rows = [], order = TF.band_order || [], ranges = bandRanges(TF);
   for (var k = 0; k < order.length; k++){
     var s = sum.bands[order[k]];
-    if (s) rows.push([(TF.labels && TF.labels[order[k]]) || order[k], fmt(s.kwh, 1), fmt(s.rate, 2), fmt(s.yen)]);
+    if (s){
+      var lbl = (TF.labels && TF.labels[order[k]]) || order[k];
+      if (ranges[order[k]]) lbl += "（" + ranges[order[k]] + "）";
+      rows.push([lbl, fmt(s.kwh, 1), fmt(s.rate, 2), fmt(s.yen)]);
+    }
   }
   if (fuel){
     rows.push(["燃料費調整" + (fuel.guess && fuel.month ? "（" + (+fuel.month.slice(5)) + "月分の値で仮）" : ""),
@@ -1201,6 +1320,122 @@ function renderCost(){
   table($("costTable"), [(+bm.slice(5)) + "月分", "kWh", "円/kWh", "円"], rows);
   $("costNote").textContent = "税込のめやすです。燃料費調整は国の値引きを含みます。" +
     "請求額は月の合計で端数を処理するため、少しずれます。単価は " + (TF.checked || "") + " 時点。";
+}
+
+/* BLE kinds in a fixed order, each pinned to one categorical colour so the
+   colour follows the kind, never its rank. Anything else folds into その他. */
+var KINDS = [
+  ["Apple", "Apple", "c1"], ["Android/Google", "Android", "c2"],
+  ["Windows", "Windows", "c3"], ["Meta/Quest", "Quest", "c4"],
+  ["Samsung", "Samsung", "c5"], ["Tile/Tracker", "タグ", "c6"],
+  ["Nature Remo", "Remo", "c7"]
+];
+var KIND_JP = {};
+for (var _ki = 0; _ki < KINDS.length; _ki++) KIND_JP[KINDS[_ki][0]] = KINDS[_ki][1];
+var OTHER = ["その他", "その他", "c8"];
+
+function bleOrder(counts){
+  // Returns [{label, color, n}] in fixed order; unknown kinds sum into その他.
+  var out = [], other = 0, seen = {};
+  for (var i = 0; i < KINDS.length; i++){
+    var k = KINDS[i][0], n = counts[k] || 0;
+    seen[k] = true;
+    if (n) out.push({ label: KINDS[i][1], color: KINDS[i][2], n: n });
+  }
+  for (var k2 in counts){ if (!seen[k2]) other += counts[k2]; }
+  if (other) out.push({ label: OTHER[1], color: OTHER[2], n: other });
+  return out;
+}
+
+function renderBle(){
+  var box = $("cardBle");
+  if (!S.ble){ return; }          // stays hidden until the first message
+  box.hidden = false;
+  var b = S.ble, now = nowTs();
+  $("bleTotal").textContent = isNum(b.total) ? String(b.total) : "--";
+  var age = isNum(b.ts) ? now - b.ts : null;
+  $("bleSub").textContent = age === null ? "" : age < 90 ? "更新 " + ago(age) : "更新が止まっています（" + ago(age) + "）";
+
+  var rows = bleOrder(b.counts || {}), max = 0, r;
+  for (r = 0; r < rows.length; r++) max = Math.max(max, rows[r].n);
+  var host = $("bleKinds");
+  clear(host);
+  for (r = 0; r < rows.length; r++){
+    var row = document.createElement("div"); row.className = "brow";
+    var sw = document.createElement("span"); sw.className = "sw"; sw.style.background = "var(--" + rows[r].color + ")";
+    var lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = rows[r].label;
+    var cnt = document.createElement("span"); cnt.className = "cnt"; cnt.textContent = rows[r].n;
+    var track = document.createElement("span"); track.className = "track";
+    var fill = document.createElement("span"); fill.className = "fill";
+    fill.style.width = (max ? Math.round(rows[r].n / max * 100) : 0) + "%";
+    fill.style.background = "var(--" + rows[r].color + ")";
+    track.appendChild(fill);
+    row.appendChild(sw); row.appendChild(lbl); row.appendChild(cnt); row.appendChild(track);
+    host.appendChild(row);
+  }
+
+  renderBleHist();
+
+  var trows = [];
+  var devs = (b.devices || []).slice(0, 40);
+  for (var i = 0; i < devs.length; i++){
+    var d = devs[i];
+    trows.push([KIND_JP[d.kind] || d.kind, d.name || "—", fmt(d.rssi) + " dBm", d.seen + "秒前"]);
+  }
+  table($("bleTable"), ["種類", "名前", "電波", "最終"], trows);
+}
+
+function renderBleHist(){
+  var box = $("bleChart");
+  var rows = (S.bleHist && S.bleHist.rows) || [];
+  if (rows.length < 2){ empty(box, "推移はこれから記録されます…"); return; }
+  var f = frame(box, 150);
+  var L = 30, R = f.w - 4, top = 16, bottom = f.h - 20;
+  var t1 = rows[rows.length - 1][0], t0 = t1 - 24 * 3600;
+  var vis = [];
+  for (var i = 0; i < rows.length; i++) if (rows[i][0] >= t0) vis.push(rows[i]);
+  if (vis.length < 2){ empty(box, "推移はこれから記録されます…"); return; }
+  var layers = KINDS.concat([OTHER]);
+  var maxTotal = 0, j;
+  for (i = 0; i < vis.length; i++){
+    var tot = 0; for (var kk in vis[i][1]) tot += vis[i][1][kk];
+    maxTotal = Math.max(maxTotal, tot);
+  }
+  var max = niceMax(maxTotal || 1);
+  function X(ts){ return L + (ts - t0) / (t1 - t0) * (R - L); }
+  function Y(v){ return bottom - (v / max) * (bottom - top); }
+  yAxis(f, L, R, top, bottom, max);
+
+  // Draw from the top layer down so each filled band sits on the one below.
+  function layerVal(bucket, layer){
+    if (layer[0] === "その他"){
+      var o = 0, s = {};
+      for (var m = 0; m < KINDS.length; m++) s[KINDS[m][0]] = true;
+      for (var kk in bucket){ if (!s[kk]) o += bucket[kk]; }
+      return o;
+    }
+    return bucket[layer[0]] || 0;
+  }
+  var cum = [];
+  for (i = 0; i < vis.length; i++) cum.push(0);
+  for (var li = 0; li < layers.length; li++){
+    var upper = [], lower = [];
+    for (i = 0; i < vis.length; i++){
+      lower.push(cum[i]);
+      cum[i] += layerVal(vis[i][1], layers[li]);
+      upper.push(cum[i]);
+    }
+    var dpath = "";
+    for (i = 0; i < vis.length; i++) dpath += (i ? "L" : "M") + X(vis[i][0]).toFixed(1) + "," + Y(upper[i]).toFixed(1);
+    for (i = vis.length - 1; i >= 0; i--) dpath += "L" + X(vis[i][0]).toFixed(1) + "," + Y(lower[i]).toFixed(1);
+    dpath += "Z";
+    sv("path", { d: dpath, fill: "var(--" + layers[li][2] + ")", stroke: "var(--surface)", "stroke-width": 0.5, opacity: 0.85 }, f.svg);
+  }
+  var xt = jst(t0);
+  for (var h = 0; h <= 24; h += 6){
+    var ts = t0 + h * 3600, p = jst(ts);
+    label(f.svg, X(ts), f.h - 5, (h === 24 ? "いま" : p.h + "時"), "tick", h === 0 ? "start" : h === 24 ? "end" : "middle");
+  }
 }
 
 function renderSlot(){
@@ -1505,6 +1740,21 @@ function pollTariff(){
   });
 }
 
+function pollBle(){
+  get("/api/ble", "ble", 15000, function(d){
+    S.ble = d.state || null;
+    dim("cardBle", false);
+    safe(renderBle);
+  }, function(){ if (S.ble) dim("cardBle", true); });
+}
+
+function pollBleHist(){
+  get("/api/ble/history?days=1", "blehist", 20000, function(d){
+    S.bleHist = d;
+    safe(renderBleHist);
+  });
+}
+
 /* ---------- wiring ---------- */
 
 function keys(id, name){
@@ -1535,19 +1785,21 @@ document.addEventListener(window.PointerEvent ? "pointerdown" : "touchstart", fu
 var resizeTimer = null;
 window.addEventListener("resize", function(){
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(function(){ safe(renderSlot); safe(renderPower); safe(renderDaily); }, 150);
+  resizeTimer = setTimeout(function(){ safe(renderSlot); safe(renderPower); safe(renderDaily); safe(renderBleHist); }, 150);
 });
 document.addEventListener("visibilitychange", function(){
-  if (!document.hidden){ pollLatest(); pollHistory(); pollDaily(); }
+  if (!document.hidden){ pollLatest(); pollHistory(); pollDaily(); pollBle(); }
 });
 
 safe(renderHero); safe(renderSlot); safe(renderPower); safe(renderDaily);
-pollLatest(); pollDaily(); pollHistory(); pollTariff();
+pollLatest(); pollDaily(); pollHistory(); pollTariff(); pollBle(); pollBleHist();
 setInterval(pollLatest, 10000);
 // Prices change at most monthly: refetch hourly, or every minute until the first answer.
 setInterval(function(){ if (!S.tariff || Date.now() % 3600000 < 60000) pollTariff(); }, 60000);
 setInterval(pollHistory, 60000);
 setInterval(function(){ if (!S.daily || Date.now() - S.dailyOkAt > 300000) pollDaily(); }, 30000);
+setInterval(pollBle, 15000);
+setInterval(pollBleHist, 300000);
 setInterval(function(){ safe(renderHero); }, 5000);
 })();
 </script>

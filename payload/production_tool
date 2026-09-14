@@ -39,9 +39,11 @@ cp $PT/config.json    /data/local/config.json
 # maintainable. README "upstream differences" lists what changed and why.
 cp $PT/mqtt_bridge.py /data/local/mqtt_bridge.py
 cp $PT/meter_hub.py   /data/local/meter_hub.py
+cp $PT/ble_monitor.py /data/local/ble_monitor.py
 chmod 600 /data/local/config.json
 chmod 755 /data/local/mqtt_bridge.py
 chmod 755 /data/local/meter_hub.py
+chmod 755 /data/local/ble_monitor.py
 
 # make root filesystem writable so we can update init RC files
 mount -o rw,remount /
@@ -54,12 +56,24 @@ mount -o rw,remount /
 [ -f /data/local/stock_gndctrl.rc ] || cp /system/etc/init/gndctrl.rc /data/local/stock_gndctrl.rc
 [ -f /data/local/stock_iptables_firewall.conf ] || cp /system/etc/iptables_firewall.conf /data/local/stock_iptables_firewall.conf
 [ -f /data/local/stock_iptables_firewall.sh ] || cp /usr/sbin/iptables_firewall.sh /data/local/stock_iptables_firewall.sh
+[ -f /data/local/stock_ndblued.rc ] || cp /system/etc/init/ndblued.rc /data/local/stock_ndblued.rc
+[ -f /data/local/stock_blueye.rc ] || cp /system/etc/init/blueye.rc /data/local/stock_blueye.rc
 
 # disable wisund (it holds /dev/ttyS1 and blocks our bridge)
 cp $PT/wisund_disabled.rc /system/etc/init/wisund.rc
 
 # disable ndeclite_agent (depends on wisund socket, not needed)
 cp $PT/ndeclite_disabled.rc /system/etc/init/ndeclite_agent.rc
+
+# ble_monitor owns the Bluetooth UART (/dev/ttyS0) for BLE scanning, so the
+# stock Bluetooth daemons must not grab it at boot. They are unused (no cloud):
+# ndblued is Bluedroid + the BLE binder API, blueye reads paired health/sensor
+# devices. Disabled here, restored from stock_*.rc (see README "元に戻す").
+# ble_monitor itself calls `start ndblued; start blueye` if it ever exits, so
+# stopping the monitor brings the stock stack back.
+cp $PT/ndblued_disabled.rc /system/etc/init/ndblued.rc
+cp $PT/blueye_disabled.rc  /system/etc/init/blueye.rc
+chmod 644 /system/etc/init/ndblued.rc /system/etc/init/blueye.rc
 
 # gndctrl keeps re-creating a Wi-Fi Direct pairing AP (CubeJ-<mac>, 192.168.100.1/24)
 # for a pairing that can never complete. It cannot be disabled - gndctrl is also the
@@ -90,9 +104,12 @@ if [ "$(wc -c < /system/etc/.fwsh.tmp)" -gt 800 ]; then
 fi
 rm -f /system/etc/.fwsh.tmp
 
-# install both services (auto-start on next boot)
+# install services (auto-start on next boot). init refuses a world-writable
+# .rc ("skipping insecure file"), and a copy from vfat can land 0666, so force 0644.
 cp $PT/meter_hub.rc      /system/etc/init/meter_hub.rc
 cp $PT/mqtt_ha_bridge.rc /system/etc/init/mqtt_ha_bridge.rc
+cp $PT/ble_monitor.rc    /system/etc/init/ble_monitor.rc
+chmod 644 /system/etc/init/meter_hub.rc /system/etc/init/mqtt_ha_bridge.rc /system/etc/init/ble_monitor.rc
 
 # put the root filesystem back to read-only; nothing below needs to write to it
 mount -o ro,remount /
@@ -100,6 +117,8 @@ mount -o ro,remount /
 # -- Stop conflicting services ------------------------------------------------
 stop wisund
 stop NDEcLiteAgent
+stop blueye
+stop ndblued
 
 # apply the firewall policy now rather than waiting for the next boot
 /usr/sbin/iptables_firewall.sh -run
@@ -114,6 +133,11 @@ sleep 3
 stop mqtt_ha_bridge 2>/dev/null || true
 sleep 1
 start mqtt_ha_bridge
+
+# -- Start the BLE monitor (it takes /dev/ttyS0 from the stock daemons) --------
+stop ble_monitor 2>/dev/null || true
+sleep 1
+start ble_monitor
 
 # -- Finish LED (blink white) -------------------------------------------------
 cp $PT/led_effect.sh /data/local/led_effect.sh

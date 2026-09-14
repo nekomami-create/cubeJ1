@@ -45,7 +45,8 @@ $FromUpstream = @(
     'ndeclite_disabled.rc'
 )
 # こちらで用意するファイル（production_tool は上流を差し替える）
-$FromPayload = @('production_tool', 'meter_hub.py', 'meter_hub.rc', 'mqtt_bridge.py')
+$FromPayload = @('production_tool', 'meter_hub.py', 'meter_hub.rc', 'mqtt_bridge.py',
+                 'ble_monitor.py', 'ble_monitor.rc', 'ndblued_disabled.rc', 'blueye_disabled.rc')
 
 # ---- 表示ヘルパ -------------------------------------------------------------
 function Say {
@@ -346,7 +347,9 @@ foreach ($f in $required) {
 # Cube 側の Linux が読むテキストは CR が混ざると壊れる
 $mustBeLf = @('production_tool\production_tool', 'production_tool\meter_hub.py', 'production_tool\mqtt_bridge.py',
               'production_tool\meter_hub.rc', 'production_tool\config.json',
-              'production_tool\wpa_supplicant.conf')
+              'production_tool\wpa_supplicant.conf', 'production_tool\ble_monitor.py',
+              'production_tool\ble_monitor.rc', 'production_tool\ndblued_disabled.rc',
+              'production_tool\blueye_disabled.rc')
 foreach ($f in $mustBeLf) {
     $p = Join-Path $root $f
     if (-not (Test-Path $p)) { continue }
