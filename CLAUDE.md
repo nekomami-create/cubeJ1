@@ -14,7 +14,8 @@ setup-cube-j1.bat   入口。UAC 昇格して .ps1 を呼ぶだけ
 setup-cube-j1.ps1   USB 作成本体。対話で4項目聞いて config を生成し検証する
 payload/            USB に置かれ、Cube 上で実行されるもの
   production_tool   起動スクリプト。上流からのフォーク（差分は README）
-  meter_hub.py      MQTT 受け皿 + HTTP サーバー。このプロジェクトの本体
+  meter_hub.py      MQTT 受け皿 + HTTP サーバー。このプロジェクトの本体。
+                    ホーム画面用アイコン3枚とマニフェストも中に埋め込んである
   meter_hub.rc      init サービス定義
 find-cube.ps1       LAN を舐めて /healthz が ok を返すホストを探す
 recovery/           gndctrl を壊したときの復旧 USB（recovery/README.md）
@@ -166,8 +167,14 @@ cast(payload.strip()) -> bytes なら decode してから cast
 [待] Bルート認証情報の到着（申請済み、郵送待ち）
 [次] 本物の認証情報で -ConfigOnly して USB を作り直し、実測値を出す
 [次] 実測を見ながらダッシュボード調整（閾値の色分けは 1.2kW / 3kW 固定）
-[後] Android APK。ウィジェット常時表示、閾値通知、グラフ
+[済] ホーム画面アイコン（マニフェスト + PNG を meter_hub に埋め込み）
+[後] Android APK。ウィジェット常時表示、閾値通知、グラフ、全画面表示
 ```
+
+Android で Chrome のアドレスバーが消えないのは仕様。HTTPS でないと
+Chrome が PWA のインストールを許さないため。全画面が欲しくなったら
+WebView をかぶせた APK を作る。それ以外の理由で HTTPS 化を検討しないこと
+（家庭内 LAN 専用であり、自己署名証明書は警告が出て体験が悪化する）。
 
 認証情報が届いたときの最短手順:
 
