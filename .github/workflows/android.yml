@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # the release asset below
 
 jobs:
   build:
@@ -64,3 +64,26 @@ jobs:
           name: cubej1-monitor-apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # An artifact needs a login and arrives as a zip, which is awkward on
+      # the phone that is meant to install it. A release asset is a plain
+      # file on a stable URL that Chrome downloads and opens directly.
+      # The tag is reused, so the link never changes; only the file behind
+      # it does.
+      - name: Publish the APK as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk cubej1-monitor.apk
+          gh release view apk-latest >/dev/null 2>&1 || gh release create apk-latest \
+            --target "$GITHUB_SHA" \
+            --title "電力モニタ 最新ビルド" \
+            --prerelease \
+            --notes "Cube J1 のダッシュボードを全画面で開く Android アプリ。
+
+            デバッグ署名なのでそのままインストールできます（提供元不明のアプリの許可は必要）。
+            初回起動で Cube の IP を聞かれます。ブラウザのアドレスバーから URL ごと貼り付けても構いません。
+
+            このリンクは固定で、ビルドのたびに中身が差し替わります。"
+          gh release upload apk-latest cubej1-monitor.apk --clobber
+          echo "APK: https://github.com/$GITHUB_REPOSITORY/releases/download/apk-latest/cubej1-monitor.apk"
