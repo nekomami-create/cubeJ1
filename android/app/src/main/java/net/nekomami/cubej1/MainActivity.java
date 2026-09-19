@@ -4,7 +4,9 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -44,6 +46,7 @@ public class MainActivity extends Activity {
     private TextView setupMessage;
     private EditText hostField;
     private EditText portField;
+    private TextView urlPreview;
 
     /** Set by the error callback, cleared when a fresh load starts. */
     private boolean loadFailed;
@@ -104,7 +107,7 @@ public class MainActivity extends Activity {
         setup.addView(setupMessage);
 
         hostField = new EditText(this);
-        hostField.setHint("192.168.1.40");
+        hostField.setHint("192.168.1.40  /  http://192.168.1.40:8080 でも可");
         hostField.setSingleLine(true);
         hostField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         hostField.setTextColor(getColor(R.color.ink));
@@ -118,6 +121,20 @@ public class MainActivity extends Activity {
         portField.setTextColor(getColor(R.color.ink));
         setup.addView(portField, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        urlPreview = new TextView(this);
+        urlPreview.setTextColor(getColor(R.color.ink2));
+        urlPreview.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        urlPreview.setPadding(0, dp(10), 0, 0);
+        setup.addView(urlPreview);
+
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence c, int a, int b, int d) { }
+            @Override public void onTextChanged(CharSequence c, int a, int b, int d) { }
+            @Override public void afterTextChanged(Editable e) { refreshPreview(); }
+        };
+        hostField.addTextChangedListener(watcher);
+        portField.addTextChangedListener(watcher);
 
         Button connect = new Button(this);
         connect.setText("接続");
@@ -134,7 +151,8 @@ public class MainActivity extends Activity {
         setup.addView(connect, lp);
 
         TextView note = new TextView(this);
-        note.setText("Cube と同じ Wi-Fi につながっている必要があります。"
+        note.setText("ブラウザのアドレスバーからそのまま貼り付けても構いません。"
+                + "Cube と同じ Wi-Fi につながっている必要があります。"
                 + "IP はルーターの管理画面か find-cube.ps1 で調べられます。");
         note.setTextColor(getColor(R.color.ink2));
         note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
@@ -145,10 +163,64 @@ public class MainActivity extends Activity {
         return setup;
     }
 
+    /**
+     * Pull a host and an optional port out of whatever was typed.
+     *
+     * The field asks for an address, but the obvious thing to paste is the
+     * whole URL from the browser's address bar. Accept both rather than
+     * building "http://http://10.0.0.2:8080:8080/" out of it.
+     */
+    static String[] parseHost(String raw) {
+        String h = raw == null ? "" : raw.trim();
+        int scheme = h.indexOf("://");
+        if (scheme >= 0) {
+            h = h.substring(scheme + 3);
+        }
+        int slash = h.indexOf('/');
+        if (slash >= 0) {
+            h = h.substring(0, slash);
+        }
+        String port = null;
+        if (h.startsWith("[")) {              // [fe80::1]:8080
+            int close = h.indexOf(']');
+            if (close > 0) {
+                String rest = h.substring(close + 1);
+                h = h.substring(0, close + 1);
+                if (rest.startsWith(":")) {
+                    port = rest.substring(1);
+                }
+            }
+        } else {
+            int colon = h.indexOf(':');
+            if (colon >= 0) {
+                port = h.substring(colon + 1);
+                h = h.substring(0, colon);
+            }
+        }
+        if (port != null) {
+            port = port.trim();
+            if (port.isEmpty()) {
+                port = null;
+            }
+        }
+        return new String[]{h.trim(), port};
+    }
+
+    private void refreshPreview() {
+        String[] parsed = parseHost(hostField.getText().toString());
+        String h = parsed[0];
+        String p = parsed[1] != null ? parsed[1] : portField.getText().toString().trim();
+        if (p.isEmpty()) {
+            p = String.valueOf(DEFAULT_PORT);
+        }
+        urlPreview.setText(h.isEmpty() ? "接続先: (未設定)" : "接続先: http://" + h + ":" + p + "/");
+    }
+
     private void showSetup(String message) {
         setupMessage.setText(message);
         hostField.setText(host());
         portField.setText(String.valueOf(port()));
+        refreshPreview();
         setup.setVisibility(View.VISIBLE);
     }
 
@@ -184,8 +256,10 @@ public class MainActivity extends Activity {
                 return; // a failed poll is not a failed page
             }
             loadFailed = true;
-            showSetup("Cube につながりません (" + url() + ")。"
-                    + "電源と Wi-Fi、それから IP が変わっていないか確かめてください。");
+            showSetup("つながりません。\n\n" + url() + "\n"
+                    + e.getErrorCode() + " " + e.getDescription() + "\n\n"
+                    + "同じスマホのブラウザで上の URL が開けるなら、"
+                    + "入力が違います。開けないなら Cube 側です。");
         }
 
         @Override
@@ -234,9 +308,12 @@ public class MainActivity extends Activity {
     }
 
     private void save() {
-        String h = hostField.getText().toString().trim();
+        String[] parsed = parseHost(hostField.getText().toString());
+        String h = parsed[0];
         int p = DEFAULT_PORT;
-        String raw = portField.getText().toString().trim();
+        // A port pasted into the address field wins over the port box: it is
+        // the more specific thing the person just typed.
+        String raw = parsed[1] != null ? parsed[1] : portField.getText().toString().trim();
         if (!raw.isEmpty()) {
             try {
                 int parsed = Integer.parseInt(raw);

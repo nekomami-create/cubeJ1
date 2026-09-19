@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Cube serves plain HTTP on the home LAN and cannot do otherwise:
+     its Python 2.7 has no usable TLS and a self-signed certificate on a
+     bare IP would only trade one failure for a worse one. Stating the
+     permission here as well as in the manifest makes it explicit and
+     survives a future targetSdk bump. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
