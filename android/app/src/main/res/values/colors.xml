@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same value as the dashboard's plane token, so the app does not
+         flash a different colour while the page loads. -->
+    <color name="plane">#f9f9f7</color>
+    <color name="ink">#0b0b0b</color>
+    <color name="ink2">#52514e</color>
+    <color name="launcher_bg">#0e1116</color>
+</resources>

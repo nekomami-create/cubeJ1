@@ -1,0 +1,31 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'net.nekomami.cubej1'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "net.nekomami.cubej1"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// No dependencies on purpose. The whole app is one Activity around a WebView,
+// so the framework classes are enough and the build stays quick and boring.
+dependencies { }

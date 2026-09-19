@@ -1,0 +1,53 @@
+name: Build APK
+
+# The debug variant on purpose: it is signed with the standard debug key,
+# so the artifact installs on a phone as-is. A release build would come out
+# unsigned and refuse to install, which is not what anyone wants from a
+# download link.
+
+on:
+  push:
+    branches:
+      - "claude/android-apk"
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build
+        working-directory: android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Describe the APK
+        run: |
+          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "apk: $APK ($(du -h "$APK" | cut -f1))"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort | tail -1)
+          "$AAPT" dump badging "$APK" | head -5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cubej1-monitor-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
