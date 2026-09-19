@@ -35,9 +35,22 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # No --stacktrace: it buries "What went wrong" under a few hundred
+      # frames, which is exactly the part worth reading from the API.
       - name: Build
         working-directory: android
-        run: gradle --no-daemon --stacktrace assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon assembleDebug 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Show what failed
+        if: failure()
+        run: |
+          echo "----- errors -----"
+          grep -nE "error:|warning:|FAILURE:|What went wrong|Execution failed|^> |AAPT|\.java:[0-9]+|\.xml:[0-9]+" \
+            "$RUNNER_TEMP/build.log" | head -80 || echo "(no matching lines)"
+          echo "----- last 40 lines -----"
+          tail -40 "$RUNNER_TEMP/build.log"
 
       - name: Describe the APK
         run: |
