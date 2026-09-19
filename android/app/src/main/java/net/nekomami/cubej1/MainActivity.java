@@ -308,17 +308,17 @@ public class MainActivity extends Activity {
     }
 
     private void save() {
-        String[] parsed = parseHost(hostField.getText().toString());
-        String h = parsed[0];
+        String[] address = parseHost(hostField.getText().toString());
+        String h = address[0];
         int p = DEFAULT_PORT;
         // A port pasted into the address field wins over the port box: it is
         // the more specific thing the person just typed.
-        String raw = parsed[1] != null ? parsed[1] : portField.getText().toString().trim();
+        String raw = address[1] != null ? address[1] : portField.getText().toString().trim();
         if (!raw.isEmpty()) {
             try {
-                int parsed = Integer.parseInt(raw);
-                if (parsed >= 1 && parsed <= 65535) {
-                    p = parsed;
+                int parsedPort = Integer.parseInt(raw);
+                if (parsedPort >= 1 && parsedPort <= 65535) {
+                    p = parsedPort;
                 }
             } catch (NumberFormatException ignored) {
                 // keep the default rather than refusing to move on
