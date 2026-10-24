@@ -194,6 +194,54 @@ final class Store extends SQLiteOpenHelper {
         return new JSONObject().put("days", out).toString();
     }
 
+    /** "2026-10": what the month picker and the month-scoped CSV accept. */
+    static boolean isMonth(String m) {
+        return m != null && m.matches("\\d{4}-\\d{2}");
+    }
+
+    /** One row per month that has any day, newest first, for the picker. */
+    String monthsJson() throws JSONException {
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT substr(date, 1, 7) AS m, SUM(total_kwh), COUNT(*), SUM(complete) "
+                        + "FROM day GROUP BY m ORDER BY m DESC", null);
+        JSONArray out = new JSONArray();
+        try {
+            while (c.moveToNext()) {
+                JSONObject o = new JSONObject();
+                o.put("month", c.getString(0));
+                o.put("total_kwh", c.isNull(1) ? JSONObject.NULL : c.getDouble(1));
+                o.put("days", c.getInt(2));
+                o.put("complete", c.getInt(3));
+                out.put(o);
+            }
+        } finally {
+            c.close();
+        }
+        return new JSONObject().put("months", out).toString();
+    }
+
+    /** The days of one month, oldest first, for the calendar. */
+    String daysInMonthJson(String month) throws JSONException {
+        JSONArray out = new JSONArray();
+        if (isMonth(month)) {
+            Cursor c = getReadableDatabase().rawQuery(
+                    "SELECT date, total_kwh, complete FROM day WHERE date LIKE ? ORDER BY date",
+                    new String[]{month + "-%"});
+            try {
+                while (c.moveToNext()) {
+                    JSONObject o = new JSONObject();
+                    o.put("date", c.getString(0));
+                    o.put("total_kwh", c.isNull(1) ? JSONObject.NULL : c.getDouble(1));
+                    o.put("complete", c.getInt(2) == 1);
+                    out.put(o);
+                }
+            } finally {
+                c.close();
+            }
+        }
+        return new JSONObject().put("days", out).toString();
+    }
+
     /** The 48 slots of one day, in order. */
     String dayJson(String date) throws JSONException {
         Cursor c = getReadableDatabase().rawQuery(
@@ -273,12 +321,21 @@ final class Store extends SQLiteOpenHelper {
 
     // -- export ------------------------------------------------------------
 
-    /** Half-hour usage, one row per slot. @return rows written. */
-    int writeSlotCsv(OutputStream os) throws IOException {
+    /**
+     * Half-hour usage, one row per slot.
+     *
+     * @param month "2026-10" for that month only, null for everything
+     * @return rows written
+     */
+    int writeSlotCsv(OutputStream os, String month) throws IOException {
         Writer w = new OutputStreamWriter(os, "UTF-8");
         w.write("date,slot,time,use_kwh,cum_kwh\n");
-        Cursor c = getReadableDatabase().rawQuery(
-                "SELECT date, slot, use_kwh, cum_kwh FROM slot ORDER BY date, slot", null);
+        Cursor c = isMonth(month)
+                ? getReadableDatabase().rawQuery(
+                        "SELECT date, slot, use_kwh, cum_kwh FROM slot WHERE date LIKE ? "
+                                + "ORDER BY date, slot", new String[]{month + "-%"})
+                : getReadableDatabase().rawQuery(
+                        "SELECT date, slot, use_kwh, cum_kwh FROM slot ORDER BY date, slot", null);
         int rows = 0;
         try {
             while (c.moveToNext()) {
@@ -296,12 +353,30 @@ final class Store extends SQLiteOpenHelper {
         return rows;
     }
 
-    /** Per-minute samples, one row each. @return rows written. */
-    int writeMinuteCsv(OutputStream os) throws IOException {
+    /**
+     * Per-minute samples, one row each.
+     *
+     * @param month "2026-10" for that local month only, null for everything
+     * @return rows written
+     */
+    int writeMinuteCsv(OutputStream os, String month) throws IOException {
         Writer w = new OutputStreamWriter(os, "UTF-8");
         w.write("epoch,iso_local,power_w,current_r_a,current_t_a\n");
+        long from = 0L;
+        long to = Long.MAX_VALUE;
+        if (isMonth(month)) {
+            java.util.Calendar cal = java.util.Calendar.getInstance();
+            cal.clear();
+            cal.set(Integer.parseInt(month.substring(0, 4)),
+                    Integer.parseInt(month.substring(5, 7)) - 1, 1, 0, 0, 0);
+            from = cal.getTimeInMillis() / 1000L;
+            cal.add(java.util.Calendar.MONTH, 1);
+            to = cal.getTimeInMillis() / 1000L - 1L;
+        }
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT ts, power_w, current_r, current_t FROM minute ORDER BY ts", null);
+                "SELECT ts, power_w, current_r, current_t FROM minute "
+                        + "WHERE ts BETWEEN ? AND ? ORDER BY ts",
+                new String[]{String.valueOf(from), String.valueOf(to)});
         int rows = 0;
         try {
             while (c.moveToNext()) {

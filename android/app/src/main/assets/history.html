@@ -37,14 +37,39 @@ h1{font-size:19px;margin:4px 0 2px}
 .card h2{font-size:14px;margin:0 0 12px}
 .empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 8px;line-height:1.8}
 
-.days{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
-.day{flex:0 0 auto;min-width:82px;background:var(--plane);border:1px solid var(--grid);
-     border-radius:10px;padding:9px 10px;text-align:left;cursor:pointer;font:inherit;color:inherit}
-.day.sel{border-color:var(--s1);background:var(--s1wash)}
-.day .d{font-size:11px;color:var(--muted)}
-.day .k{font-size:17px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
-.day .k small{font-size:10px;color:var(--muted);font-weight:500;margin-left:2px}
-.day .partial{color:var(--muted);font-size:10px;margin-top:2px}
+button{font:inherit;color:inherit}
+.yearbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.yearbar .y{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.yearbar .y small{font-size:12px;color:var(--muted);font-weight:500;margin-left:8px}
+.step{width:40px;height:34px;border:1px solid var(--grid);border-radius:9px;background:var(--plane);
+      font-size:16px;cursor:pointer}
+.step:disabled{opacity:.3;cursor:default}
+
+/* Twelve months in two rows and a month as a calendar: the whole range is
+   reachable without scrolling sideways through a strip of days. */
+.months{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.mon{background:var(--plane);border:1px solid var(--grid);border-radius:9px;padding:6px 2px;
+     cursor:pointer;text-align:center;min-width:0}
+.mon:disabled{opacity:.35;cursor:default}
+.mon .m{font-size:12px}
+.mon .k{font-size:11px;color:var(--muted);margin-top:2px;font-variant-numeric:tabular-nums;
+        white-space:nowrap;overflow:hidden}
+.sel{border-color:var(--s1) !important;background:var(--s1wash) !important}
+
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.wd{font-size:10px;color:var(--muted);text-align:center;padding-bottom:2px}
+.cell{border:1px solid var(--grid);border-radius:8px;background:var(--plane);padding:5px 1px 4px;
+      text-align:center;cursor:pointer;min-width:0}
+.cell:disabled{opacity:.35;cursor:default}
+.cell.blank{visibility:hidden}
+.cell .n{font-size:11px;color:var(--ink2)}
+.cell .k{font-size:12px;font-weight:600;margin-top:1px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cell .k.part{color:var(--muted);font-weight:500}
+
+.csv{display:grid;grid-template-columns:auto 1fr 1fr;gap:8px;align-items:center}
+.csv .lab{font-size:13px;color:var(--ink2);padding-right:4px}
+.csv button{border:1px solid var(--grid);border-radius:9px;background:var(--plane);
+            padding:9px 4px;font-size:13px;cursor:pointer}
 
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px}
 .legend{font-size:11px;color:var(--muted);white-space:nowrap}
@@ -69,9 +94,21 @@ footer{font-size:11px;color:var(--muted);text-align:center;line-height:1.8;margi
   <h1>履歴</h1>
   <div class="sub" id="status">読み込み中...</div>
 
-  <div class="card">
-    <h2>日ごと</h2>
-    <div class="days" id="days"></div>
+  <div class="card" id="pickCard" hidden>
+    <div class="yearbar">
+      <button class="step" id="prevYear" aria-label="前の年">‹</button>
+      <span class="y" id="yearLabel"></span>
+      <button class="step" id="nextYear" aria-label="次の年">›</button>
+    </div>
+    <div class="months" id="months"></div>
+  </div>
+
+  <div class="card" id="calCard" hidden>
+    <div class="head">
+      <h2 id="monthTitle" style="margin:0"></h2>
+      <span class="legend" id="monthTotal"></span>
+    </div>
+    <div class="cal" id="cal"></div>
   </div>
 
   <div class="card" id="dayCard" hidden>
@@ -83,6 +120,19 @@ footer{font-size:11px;color:var(--muted);text-align:center;line-height:1.8;margi
     <div class="axis"><span>0時</span><span>6時</span><span>12時</span><span>18時</span><span>24時</span></div>
     <div class="tot"><span class="lab">この日の合計</span><span class="val" id="dayTotal">--<small>kWh</small></span></div>
     <div class="note" id="note"></div>
+  </div>
+
+  <div class="card" id="csvCard" hidden>
+    <h2>CSV で書き出す</h2>
+    <div class="csv">
+      <span class="lab">30分ごと</span>
+      <button data-kind="halfhour" data-scope="month">この月</button>
+      <button data-kind="halfhour" data-scope="all">すべて</button>
+      <span class="lab">1分ごと</span>
+      <button data-kind="minute" data-scope="month">この月</button>
+      <button data-kind="minute" data-scope="all">すべて</button>
+    </div>
+    <div class="note">保存先は次の画面で選びます。1分ごとの記録はこの端末に90日まで残ります。</div>
   </div>
 
   <div class="card" id="emptyCard" hidden>
@@ -122,8 +172,11 @@ function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-var lastDays = [];
-var selected = null;
+var months = [];      // [{month:"2026-10", total_kwh, days, complete}], newest first
+var monthDays = [];   // the shown month's days, oldest first
+var year = null;      // the year the month grid shows
+var month = null;     // "2026-10"
+var selected = null;  // "2026-10-24"
 
 /**
  * Both series on one axis in watts.
@@ -199,25 +252,122 @@ function draw(use, samples, midnight) {
   ctx.fillText(Math.round(max / 1.12) + " W", 4 * dpr, 13 * dpr);
 }
 
-function renderDays() {
-  var box = document.getElementById("days");
-  box.innerHTML = "";
-  lastDays.forEach(function (d) {
-    var b = document.createElement("button");
-    b.className = "day" + (d.date === selected ? " sel" : "");
-    b.innerHTML = '<div class="d">' + d.date.slice(5).replace("-", "/") + "</div>"
-      + '<div class="k">' + fmt(d.total_kwh, 1) + "<small>kWh</small></div>"
-      + (d.complete ? "" : '<div class="partial">欠けあり</div>');
-    b.onclick = function () { select(d.date); };
-    box.appendChild(b);
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+function monthEntry(m) {
+  for (var i = 0; i < months.length; i++) if (months[i].month === m) return months[i];
+  return null;
+}
+
+function years() {
+  var out = [];
+  months.forEach(function (m) {
+    var y = +m.month.slice(0, 4);
+    if (out.indexOf(y) < 0) out.push(y);
   });
+  return out; // newest first, like months
+}
+
+function renderYear() {
+  var ys = years();
+  var i = ys.indexOf(year);
+  var sum = 0;
+  months.forEach(function (m) {
+    if (+m.month.slice(0, 4) === year && m.total_kwh !== null) sum += m.total_kwh;
+  });
+  document.getElementById("yearLabel").innerHTML =
+    year + "年<small>" + fmt(sum, 0) + " kWh</small>";
+  // Newest first: the "previous" year is further along the list.
+  var prev = document.getElementById("prevYear");
+  var next = document.getElementById("nextYear");
+  prev.disabled = i < 0 || i >= ys.length - 1;
+  next.disabled = i <= 0;
+  prev.onclick = function () { showYear(ys[i + 1]); };
+  next.onclick = function () { showYear(ys[i - 1]); };
+
+  var box = document.getElementById("months");
+  box.innerHTML = "";
+  for (var mo = 1; mo <= 12; mo++) {
+    var key = year + "-" + pad2(mo);
+    var e = monthEntry(key);
+    var b = document.createElement("button");
+    b.className = "mon" + (key === month ? " sel" : "");
+    b.disabled = !e;
+    b.innerHTML = '<div class="m">' + mo + "月</div>"
+      + '<div class="k">' + (e ? fmt(e.total_kwh, 0) : "&nbsp;") + "</div>";
+    if (e) b.onclick = (function (k) { return function () { showMonth(k); }; })(key);
+    box.appendChild(b);
+  }
+}
+
+/** Jump to a year at its newest month that has data. */
+function showYear(y) {
+  for (var i = 0; i < months.length; i++) {
+    if (+months[i].month.slice(0, 4) === y) { showMonth(months[i].month); return; }
+  }
+}
+
+function showMonth(m) {
+  month = m;
+  year = +m.slice(0, 4);
+  var r = api("daysInMonth", m);
+  monthDays = (r && r.days) || [];
+  renderYear();
+  var keep = selected && selected.slice(0, 7) === m && dayEntry(selected);
+  if (!keep) selected = monthDays.length ? monthDays[monthDays.length - 1].date : null;
+  renderCalendar();
+  if (selected) select(selected);
+  else document.getElementById("dayCard").hidden = true;
+}
+
+function dayEntry(date) {
+  for (var i = 0; i < monthDays.length; i++) if (monthDays[i].date === date) return monthDays[i];
+  return null;
+}
+
+function renderCalendar() {
+  var y = +month.slice(0, 4), mo = +month.slice(5, 7);
+  var e = monthEntry(month);
+  document.getElementById("monthTitle").textContent = y + "年" + mo + "月";
+  document.getElementById("monthTotal").textContent =
+    e ? "合計 " + fmt(e.total_kwh, 1) + " kWh ・ " + e.days + "日分" : "";
+
+  var box = document.getElementById("cal");
+  box.innerHTML = "";
+  "日月火水木金土".split("").forEach(function (w) {
+    var h = document.createElement("div");
+    h.className = "wd"; h.textContent = w;
+    box.appendChild(h);
+  });
+  var lead = new Date(y, mo - 1, 1).getDay();
+  var last = new Date(y, mo, 0).getDate();
+  for (var i = 0; i < lead; i++) {
+    var blank = document.createElement("div");
+    blank.className = "cell blank";
+    box.appendChild(blank);
+  }
+  for (var d = 1; d <= last; d++) {
+    var key = month + "-" + pad2(d);
+    var de = dayEntry(key);
+    var b = document.createElement("button");
+    b.className = "cell" + (key === selected ? " sel" : "");
+    b.disabled = !de;
+    // A day still missing slots is shown greyed rather than labelled, to
+    // keep the cell to one number; the day card says how much is there.
+    b.innerHTML = '<div class="n">' + d + "</div>"
+      + '<div class="k' + (de && !de.complete ? " part" : "") + '">'
+      + (de ? fmt(de.total_kwh, 1) : "&nbsp;") + "</div>";
+    if (de) b.onclick = (function (k) { return function () { select(k); }; })(key);
+    box.appendChild(b);
+  }
+  document.getElementById("calCard").hidden = false;
 }
 
 function select(date) {
   selected = date;
   var d = api("day", date);
   var card = document.getElementById("dayCard");
-  if (!d || !d.use_kwh) { card.hidden = true; return; }
+  if (!d || !d.use_kwh) { card.hidden = true; renderCalendar(); return; }
 
   var mins = api("minutesForDate", date) || { samples: [] };
   var samples = mins.samples || [];
@@ -231,14 +381,30 @@ function select(date) {
 
   var known = d.use_kwh.filter(function (v) { return v !== null; });
   var total = known.reduce(function (a, b) { return a + b; }, 0);
+  var de = dayEntry(date);
   document.getElementById("dayTitle").textContent = date;
   document.getElementById("dayTotal").innerHTML = fmt(total, 1) + "<small>kWh</small>";
-  document.getElementById("note").textContent = samples.length
+  document.getElementById("note").textContent = (samples.length
     ? "1分ごとの記録 " + samples.length + " 件"
-    : "この日の1分ごとの記録はありません（Cube が保持する分だけ同期できます）";
+    : "この日の1分ごとの記録はありません（Cube が保持する分だけ同期できます）")
+    + (de && !de.complete ? "。30分ごとの値に欠けがあります" : "");
 
-  renderDays();
+  renderCalendar();
 }
+
+function exportCsv(kind, scope) {
+  if (typeof Meter === "undefined" || !Meter.exportCsv) return;
+  Meter.exportCsv(kind, scope === "month" && month ? month : "");
+}
+
+(function () {
+  var bs = document.querySelectorAll(".csv button");
+  for (var i = 0; i < bs.length; i++) {
+    bs[i].onclick = (function (b) {
+      return function () { exportCsv(b.getAttribute("data-kind"), b.getAttribute("data-scope")); };
+    })(bs[i]);
+  }
+})();
 
 function load() {
   var st = api("status") || {};
@@ -247,11 +413,13 @@ function load() {
   document.getElementById("foot").textContent =
     st.host ? "Cube " + st.host + " から取得" : "";
 
-  var r = api("days", 60);
-  lastDays = (r && r.days) || [];
-  document.getElementById("emptyCard").hidden = lastDays.length > 0;
-  renderDays();
-  if (lastDays.length) select(lastDays[0].date);
+  var r = api("months");
+  months = (r && r.months) || [];
+  var has = months.length > 0;
+  document.getElementById("emptyCard").hidden = has;
+  document.getElementById("pickCard").hidden = !has;
+  document.getElementById("csvCard").hidden = !has;
+  if (has) showMonth(month && monthEntry(month) ? month : months[0].month);
 }
 
 window.addEventListener("resize", function () { if (selected) select(selected); });

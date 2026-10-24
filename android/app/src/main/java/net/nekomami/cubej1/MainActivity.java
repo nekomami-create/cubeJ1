@@ -67,12 +67,31 @@ public class MainActivity extends Activity {
     private boolean loadFailed;
     /** True while the bundled history page is showing. */
     private boolean offline;
+    /**
+     * The month the pending CSV is limited to, null for everything. Kept
+     * across the save dialog, which can outlive this activity instance.
+     */
+    private String csvMonth;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) {
+            csvMonth = state.getString("csvMonth");
+        }
         store = Store.get(this);
-        bridge = new Bridge(this, store);
+        bridge = new Bridge(this, store, new Bridge.Exporter() {
+            @Override
+            public void exportCsv(final String kind, final String month) {
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        MainActivity.this.exportCsv(
+                                "minute".equals(kind) ? REQ_CSV_MINUTE : REQ_CSV_SLOT, kind, month);
+                    }
+                });
+            }
+        });
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(getColor(R.color.plane));
@@ -274,8 +293,8 @@ public class MainActivity extends Activity {
                         switch (which) {
                             case 0: syncNow(); break;
                             case 1: if (offline) { chooseView(true); } else { loadHistory(); } break;
-                            case 2: exportCsv(REQ_CSV_SLOT, "halfhour"); break;
-                            case 3: exportCsv(REQ_CSV_MINUTE, "minute"); break;
+                            case 2: exportCsv(REQ_CSV_SLOT, "halfhour", null); break;
+                            case 3: exportCsv(REQ_CSV_MINUTE, "minute", null); break;
                             case 4: showSetup("接続先の IP とポートを変更できます。"); break;
                             default: finish(); break;
                         }
@@ -306,14 +325,26 @@ public class MainActivity extends Activity {
 
     // -- CSV ---------------------------------------------------------------
 
-    /** Let the system picker choose where it goes: no storage permission. */
-    private void exportCsv(int request, String kind) {
-        String stamp = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
+    /**
+     * Let the system picker choose where it goes: no storage permission.
+     *
+     * @param month "2026-10" to write that month only, null for everything
+     */
+    private void exportCsv(int request, String kind, String month) {
+        csvMonth = month;
+        String stamp = month != null ? month
+                : new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType("text/csv");
         i.putExtra(Intent.EXTRA_TITLE, "cubej1-" + kind + "-" + stamp + ".csv");
         startActivityForResult(i, request);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putString("csvMonth", csvMonth);
     }
 
     @Override
@@ -327,6 +358,7 @@ public class MainActivity extends Activity {
         }
         final Uri uri = data.getData();
         final boolean slots = request == REQ_CSV_SLOT;
+        final String month = csvMonth;
         toast("書き出しています...");
         new Thread(new Runnable() {
             @Override
@@ -339,7 +371,7 @@ public class MainActivity extends Activity {
                     }
                     int rows;
                     try {
-                        rows = slots ? store.writeSlotCsv(os) : store.writeMinuteCsv(os);
+                        rows = slots ? store.writeSlotCsv(os, month) : store.writeMinuteCsv(os, month);
                     } finally {
                         os.close();
                     }

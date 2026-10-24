@@ -9,18 +9,57 @@ import org.json.JSONObject;
  * What the offline history page is allowed to ask for.
  *
  * Read-only and local: it hands back rows already on this phone and can
- * neither write to the database nor touch the filesystem. It is attached
+ * neither write to the database nor touch the filesystem. The one thing it
+ * can start is a CSV export, and that only opens the system's save dialog;
+ * where the file goes is chosen by the person, not the page. It is attached
  * only while the bundled asset page is loaded, never while the WebView is
  * showing the Cube's own page.
  */
 final class Bridge {
 
+    /** Opens the save dialog. Called on a WebView thread, not the UI thread. */
+    interface Exporter {
+        void exportCsv(String kind, String month);
+    }
+
     private final Context ctx;
     private final Store store;
+    private final Exporter exporter;
 
-    Bridge(Context ctx, Store store) {
+    Bridge(Context ctx, Store store, Exporter exporter) {
         this.ctx = ctx;
         this.store = store;
+        this.exporter = exporter;
+    }
+
+    @JavascriptInterface
+    public String months() {
+        try {
+            return store.monthsJson();
+        } catch (Exception e) {
+            return "{\"months\":[]}";
+        }
+    }
+
+    @JavascriptInterface
+    public String daysInMonth(String month) {
+        try {
+            return store.daysInMonthJson(month);
+        } catch (Exception e) {
+            return "{\"days\":[]}";
+        }
+    }
+
+    /**
+     * @param kind  "halfhour" or "minute"
+     * @param month "2026-10" for that month, empty for everything
+     */
+    @JavascriptInterface
+    public void exportCsv(String kind, String month) {
+        if (!"halfhour".equals(kind) && !"minute".equals(kind)) {
+            return;
+        }
+        exporter.exportCsv(kind, Store.isMonth(month) ? month : null);
     }
 
     @JavascriptInterface
