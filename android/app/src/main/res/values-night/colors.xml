@@ -3,4 +3,6 @@
     <color name="plane">#0d0d0d</color>
     <color name="ink">#f2f2f0</color>
     <color name="ink2">#a8a7a2</color>
+    <color name="surface">#1a1a19</color>
+    <color name="grid">#2b2b29</color>
 </resources>

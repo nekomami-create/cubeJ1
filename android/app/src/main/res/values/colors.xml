@@ -5,5 +5,7 @@
     <color name="plane">#f9f9f7</color>
     <color name="ink">#0b0b0b</color>
     <color name="ink2">#52514e</color>
+    <color name="surface">#fcfcfb</color>
+    <color name="grid">#e1e0d9</color>
     <color name="launcher_bg">#0e1116</color>
 </resources>

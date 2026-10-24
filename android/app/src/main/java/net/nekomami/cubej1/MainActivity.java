@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -30,6 +31,7 @@ import android.widget.Toast;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -55,6 +57,7 @@ public class MainActivity extends Activity {
     private EditText hostField;
     private EditText portField;
     private TextView urlPreview;
+    private TextView switcher;
 
     private Store store;
     private Bridge bridge;
@@ -91,6 +94,37 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // A native control rather than something injected into the page:
+        // the live view is the Cube's own dashboard and the app has no
+        // business editing it, and the same button then works on both pages.
+        switcher = new TextView(this);
+        switcher.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        switcher.setTextColor(getColor(R.color.ink));
+        switcher.setPadding(dp(16), dp(10), dp(16), dp(10));
+        GradientDrawable pill = new GradientDrawable();
+        pill.setColor(getColor(R.color.surface));
+        pill.setStroke(dp(1), getColor(R.color.grid));
+        pill.setCornerRadius(dp(22));
+        switcher.setBackground(pill);
+        switcher.setElevation(dp(3));
+        switcher.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (offline) {
+                    chooseView(true);
+                } else {
+                    loadHistory();
+                }
+            }
+        });
+        FrameLayout.LayoutParams sw = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sw.gravity = Gravity.BOTTOM | Gravity.END;
+        sw.rightMargin = dp(14);
+        sw.bottomMargin = dp(18);
+        switcher.setVisibility(View.GONE);
+        root.addView(switcher, sw);
+
         root.addView(buildSetup(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -102,14 +136,21 @@ public class MainActivity extends Activity {
         if (!Prefs.configured(this)) {
             showSetup("Cube の IP アドレスを入れてください。");
         } else {
-            chooseView();
+            chooseView(false);
         }
     }
 
     // -- which page to show ------------------------------------------------
 
-    /** Ask the Cube whether it is there, then load the matching page. */
-    private void chooseView() {
+    /**
+     * Ask the Cube whether it is there, then load the matching page.
+     *
+     * @param announce say so when it is not there. Silent on startup, where
+     *                 dropping into the history is the expected outcome, but
+     *                 wanted when the person pressed "ライブ" and nothing
+     *                 appears to happen.
+     */
+    private void chooseView(final boolean announce) {
         final String base = Prefs.baseUrl(this);
         new Thread(new Runnable() {
             @Override
@@ -122,6 +163,9 @@ public class MainActivity extends Activity {
                             loadLive();
                         } else {
                             loadHistory();
+                            if (announce) {
+                                toast("Cube に届きません。履歴を表示しています。");
+                            }
                         }
                     }
                 });
@@ -132,6 +176,11 @@ public class MainActivity extends Activity {
         }, "cubej1-probe").start();
     }
 
+    private void setSwitcher() {
+        switcher.setText(offline ? "ライブ画面へ" : "履歴を見る");
+        switcher.setVisibility(setup.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+    }
+
     private void loadLive() {
         offline = false;
         // The bridge belongs to the bundled page only; the Cube's page has
@@ -139,6 +188,7 @@ public class MainActivity extends Activity {
         web.removeJavascriptInterface(BRIDGE_NAME);
         loadFailed = false;
         web.loadUrl(Prefs.baseUrl(this) + "/");
+        setSwitcher();
     }
 
     private void loadHistory() {
@@ -147,6 +197,7 @@ public class MainActivity extends Activity {
         loadFailed = false;
         setup.setVisibility(View.GONE);
         web.loadUrl(HISTORY_PAGE);
+        setSwitcher();
     }
 
     private class Client extends WebViewClient {
@@ -179,6 +230,7 @@ public class MainActivity extends Activity {
         public void onPageFinished(WebView v, String u) {
             if (!loadFailed) {
                 setup.setVisibility(View.GONE);
+                setSwitcher();
             }
         }
     }
@@ -214,7 +266,7 @@ public class MainActivity extends Activity {
                     public void onClick(DialogInterface d, int which) {
                         switch (which) {
                             case 0: syncNow(); break;
-                            case 1: if (offline) { chooseView(); } else { loadHistory(); } break;
+                            case 1: if (offline) { chooseView(true); } else { loadHistory(); } break;
                             case 2: exportCsv(REQ_CSV_SLOT, "halfhour"); break;
                             case 3: exportCsv(REQ_CSV_MINUTE, "minute"); break;
                             case 4: showSetup("接続先の IP とポートを変更できます。"); break;
@@ -408,18 +460,31 @@ public class MainActivity extends Activity {
         hostField.addTextChangedListener(watcher);
         portField.addTextChangedListener(watcher);
 
+        Button find = new Button(this);
+        find.setText("Cube を探す");
+        find.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                findCube();
+            }
+        });
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        flp.topMargin = dp(16);
+        setup.addView(find, flp);
+
         Button connect = new Button(this);
         connect.setText("接続");
         connect.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 save();
-                chooseView();
+                chooseView(false);
             }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(20);
+        lp.topMargin = dp(8);
         setup.addView(connect, lp);
 
         TextView note = new TextView(this);
@@ -435,12 +500,73 @@ public class MainActivity extends Activity {
         return setup;
     }
 
+    /**
+     * Sweep this phone's /24 for something answering /healthz.
+     *
+     * The address is the one thing the app cannot work without and the one
+     * thing DHCP may change, and a phone has no find-cube.ps1 to fall back
+     * on.
+     */
+    private void findCube() {
+        int port = Prefs.DEFAULT_PORT;
+        String raw = portField.getText().toString().trim();
+        if (!raw.isEmpty()) {
+            try {
+                port = Integer.parseInt(raw);
+            } catch (NumberFormatException ignored) {
+                // scan the default rather than refuse
+            }
+        }
+        final int scanPort = port;
+        final AlertDialog waiting = new AlertDialog.Builder(this)
+                .setMessage("同じネットワークを探しています...\n（20秒ほどかかります）")
+                .setCancelable(false)
+                .show();
+        Scanner.scan(scanPort, new Scanner.Listener() {
+            @Override
+            public void onDone(List<String> found, String subnet, String error) {
+                waiting.dismiss();
+                if (error != null) {
+                    toast(error);
+                    return;
+                }
+                if (found.isEmpty()) {
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("見つかりません")
+                            .setMessage(subnet + ".1-254 の :" + scanPort + " を調べましたが、"
+                                    + "応答がありませんでした。\n\n"
+                                    + "Cube が別のセグメントにいるか、まだ Wi-Fi に"
+                                    + "繋がっていない可能性があります。")
+                            .setPositiveButton("OK", null)
+                            .show();
+                    return;
+                }
+                if (found.size() == 1) {
+                    hostField.setText(found.get(0));
+                    toast(found.get(0) + " が見つかりました");
+                    return;
+                }
+                final String[] items = found.toArray(new String[0]);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("見つかった Cube")
+                        .setItems(items, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                hostField.setText(items[which]);
+                            }
+                        })
+                        .show();
+            }
+        });
+    }
+
     private void showSetup(String message) {
         setupMessage.setText(message);
         hostField.setText(Prefs.host(this));
         portField.setText(String.valueOf(Prefs.port(this)));
         refreshPreview();
         setup.setVisibility(View.VISIBLE);
+        switcher.setVisibility(View.GONE);
     }
 
     private void save() {
