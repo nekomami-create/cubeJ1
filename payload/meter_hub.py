@@ -591,6 +591,7 @@ def ring_save_sec(state):
 
 def persister(state):
     last_ring = time.time()
+    last_ble = time.time()
     while True:
         time.sleep(30)
         with state.lock:
@@ -600,11 +601,14 @@ def persister(state):
             save_json(DAILY_PATH, days)
         if time.time() - last_ring >= ring_save_sec(state):
             save_json(RING_PATH, [list(s) for s in state.get_history()])
+            last_ring = time.time()
+        # BLE counts keep their own 10-minute cadence; only the ring scales.
+        if time.time() - last_ble >= RING_SAVE_BASE_SEC:
             with state.lock:
                 hist = [[r[0], dict(r[1])] for r in state.ble_hist]
             if hist:
                 save_json(BLE_HIST_PATH, hist)
-            last_ring = time.time()
+            last_ble = time.time()
 
 def janitor():
     while True:
