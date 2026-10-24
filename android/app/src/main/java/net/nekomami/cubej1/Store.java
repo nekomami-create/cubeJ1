@@ -19,8 +19,8 @@ import java.util.Locale;
 /**
  * The phone's copy of the meter's history.
  *
- * The Cube keeps half-hour data for 400 days on disk but only 24 hours of
- * per-minute samples in memory, so the two are stored with different
+ * The Cube keeps half-hour data for 400 days but only a few days of
+ * per-minute samples (five by default), so the two are stored with different
  * expectations: slots are the long record and are never pruned here, while
  * minutes are a recent detail view and age out.
  */

@@ -70,8 +70,8 @@ final class Sync {
 
         Store store = Store.get(ctx);
         try {
-            // Per-minute detail. The Cube holds 24h of it, so anything older
-            // than the last visit is already gone and cannot be recovered.
+            // Per-minute detail. The Cube holds history_size of it (five days
+            // by default), so a gap longer than that cannot be recovered.
             int minutes = 0;
             JSONArray samples = new JSONObject(Cube.get(base, "/api/history"))
                     .optJSONArray("samples");

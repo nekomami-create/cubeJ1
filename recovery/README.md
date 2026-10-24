@@ -21,7 +21,7 @@
 - `/data/local/stock_iptables_firewall.conf` を `/system/etc/` へ書き戻す
 - `gndctrl` を起動する
 
-`meter_hub` と `mqtt_bridge` には触れないので、電力モニタ側の設定は保たれる。
+`meter_hub`・`mqtt_bridge`・`ble_monitor` には触れないので、電力モニタ側の設定は保たれる。
 
 ## 退避ファイルが無い場合
 

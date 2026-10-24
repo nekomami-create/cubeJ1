@@ -8,3 +8,9 @@ __pycache__/
 *.jks
 *.keystore
 !android/app/debug.keystore
+
+# Android build output (Gradle, local SDK path)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
