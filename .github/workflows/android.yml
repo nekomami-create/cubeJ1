@@ -42,28 +42,30 @@ jobs:
       # different signature, and Android rejects the update as a package
       # conflict. ANDROID_KEYSTORE_PASSWORD may be left unset if the key
       # was made without one.
-      # The secret arrives through env, not interpolated into the script:
-      # `secrets` is not a value an `if` may read, and a secret pasted into
-      # a run line would be one quoting mistake away from the log.
-      - name: Restore the signing key
+      # The debug key is committed, so nothing has to be restored for a
+      # build that can update the previous install. This step only matters
+      # once a real release key exists; without the secret it does nothing
+      # and the release build falls back to the debug key.
+      - name: Restore the release key, if there is one
+        id: release_key
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "no signing secret is set; this build falls back to a"
-            echo "throwaway key and cannot update an existing install."
+            echo "no release key set; builds are signed with the committed debug key"
             exit 0
           fi
           printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' \
-            | base64 -d > android/app/cubej1.jks
-          test -s android/app/cubej1.jks
-          echo "signing key restored ($(stat -c%s android/app/cubej1.jks) bytes)"
+            | base64 -d > "$RUNNER_TEMP/release.keystore"
+          test -s "$RUNNER_TEMP/release.keystore"
+          echo "path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
 
       - name: Build
         env:
-          CUBEJ1_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          CUBEJ1_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          CUBEJ1_KEY_ALIAS: cubej1
+          RELEASE_KEYSTORE: ${{ steps.release_key.outputs.path }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
         working-directory: android
         run: |
           set -o pipefail
@@ -81,12 +83,7 @@ jobs:
       - name: Which key signed it
         run: |
           APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
-          if keytool -printcert -jarfile "$APK" 2>/dev/null | grep -m1 'SHA256:'; then
-            :
-          else
-            echo "no v1 signature: this build used Gradle's throwaway debug key,"
-            echo "so it cannot update an install signed by a different run."
-          fi
+          keytool -printcert -jarfile "$APK" | grep -E 'Owner|SHA256:' | head -2
 
       - name: Describe the APK
         run: |

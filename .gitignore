@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
 
-# The signing keystore is restored from a repository secret at build
-# time and must never land in git.
+# A release key, if one is ever made, is restored from a repository secret
+# at build time and must never land in git. The debug keystore below is the
+# exception: it is committed on purpose so that CI builds can update one
+# another. See android/README.md.
 *.jks
 *.keystore
+!android/app/debug.keystore
