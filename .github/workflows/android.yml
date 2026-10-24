@@ -37,7 +37,24 @@ jobs:
 
       # No --stacktrace: it buries "What went wrong" under a few hundred
       # frames, which is exactly the part worth reading from the API.
+      # Restores the signing key when the repository has one. Without it
+      # Gradle makes a throwaway key per run, every build carries a
+      # different signature, and Android rejects the update as a package
+      # conflict. ANDROID_KEYSTORE_PASSWORD may be left unset if the key
+      # was made without one.
+      - name: Restore the signing key
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '[:space:]' \
+            | base64 -d > android/app/cubej1.jks
+          test -s android/app/cubej1.jks
+          echo "signing key restored ($(stat -c%s android/app/cubej1.jks) bytes)"
+
       - name: Build
+        env:
+          CUBEJ1_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CUBEJ1_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CUBEJ1_KEY_ALIAS: cubej1
         working-directory: android
         run: |
           set -o pipefail
@@ -51,6 +68,16 @@ jobs:
             "$RUNNER_TEMP/build.log" | head -80 || echo "(no matching lines)"
           echo "----- last 40 lines -----"
           tail -40 "$RUNNER_TEMP/build.log"
+
+      - name: Which key signed it
+        run: |
+          APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -1)
+          if keytool -printcert -jarfile "$APK" 2>/dev/null | grep -m1 'SHA256:'; then
+            :
+          else
+            echo "no v1 signature: this build used Gradle's throwaway debug key,"
+            echo "so it cannot update an install signed by a different run."
+          fi
 
       - name: Describe the APK
         run: |

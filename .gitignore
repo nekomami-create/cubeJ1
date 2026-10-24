@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# The signing keystore is restored from a repository secret at build
+# time and must never land in git.
+*.jks
+*.keystore

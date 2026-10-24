@@ -2,21 +2,60 @@ plugins {
     id 'com.android.application'
 }
 
+// Signing has to be stable or Android refuses to update the previous
+// install with "package conflict": with no key chosen, Gradle invents a
+// debug one on whatever machine builds, and CI gets a fresh empty machine
+// every run, so every build comes out with a different signature.
+//
+// The key is restored from a repository secret into this directory before
+// the build; it is never committed. When it is absent the build still
+// works and falls back to Gradle's throwaway key, which is fine for a
+// first install and means a fork or a local checkout needs no setup.
+def keystoreFile = file(System.getenv("CUBEJ1_KEYSTORE") ?: "cubej1.jks")
+def haveKeystore = keystoreFile.exists()
+
 android {
     namespace 'net.nekomami.cubej1'
     compileSdk 34
+
+    signingConfigs {
+        if (haveKeystore) {
+            stable {
+                storeFile keystoreFile
+                storePassword System.getenv("CUBEJ1_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("CUBEJ1_KEY_ALIAS") ?: "cubej1"
+                keyPassword System.getenv("CUBEJ1_KEY_PASSWORD")
+                // v1 alongside v2/v3 so `keytool -printcert -jarfile` can
+                // read the signer out of a finished APK and confirm which
+                // key it carries.
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
 
     defaultConfig {
         applicationId "net.nekomami.cubej1"
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName "1.2"
+        versionCode 4
+        versionName "1.2.1"
     }
 
     buildTypes {
+        debug {
+            if (haveKeystore) {
+                signingConfig signingConfigs.stable
+            }
+        }
         release {
             minifyEnabled false
+            // Same key: there is no store to publish to, and an unsigned
+            // release build would simply refuse to install.
+            if (haveKeystore) {
+                signingConfig signingConfigs.stable
+            }
         }
     }
 
