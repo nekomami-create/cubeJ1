@@ -2,8 +2,12 @@ package net.nekomami.cubej1;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.SharedPreferences;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -21,25 +25,29 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
- * A single WebView pointed at meter_hub on the Cube.
+ * Two pages in one WebView.
  *
- * The dashboard is already a complete, self-refreshing page, so the app's
- * only jobs are to remember the address, show the page without browser
- * chrome, and say something useful when the Cube cannot be reached.
- *
- * The page is served over plain HTTP on the home LAN, which is why the
- * manifest sets usesCleartextTraffic. Chrome refuses to install such a page
- * as a PWA for the same reason; that refusal is the whole reason this app
- * exists.
+ * At home the Cube's own dashboard is the live view and nothing here needs
+ * to reproduce it. Away from home there is nothing to reach, so the app
+ * shows its own page built from the history it has already pulled down.
+ * Which one appears is decided by asking the Cube, not by reading the
+ * Wi-Fi name, so the app needs no location permission.
  */
 public class MainActivity extends Activity {
 
-    private static final String PREFS = "cubej1";
-    private static final String KEY_HOST = "host";
-    private static final String KEY_PORT = "port";
-    private static final int DEFAULT_PORT = 8080;
+    private static final int REQ_CSV_SLOT = 101;
+    private static final int REQ_CSV_MINUTE = 102;
+
+    private static final String HISTORY_PAGE = "file:///android_asset/history.html";
+    private static final String BRIDGE_NAME = "Meter";
 
     private WebView web;
     private LinearLayout setup;
@@ -48,12 +56,20 @@ public class MainActivity extends Activity {
     private EditText portField;
     private TextView urlPreview;
 
+    private Store store;
+    private Bridge bridge;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+
     /** Set by the error callback, cleared when a fresh load starts. */
     private boolean loadFailed;
+    /** True while the bundled history page is showing. */
+    private boolean offline;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        store = Store.get(this);
+        bridge = new Bridge(this, store);
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(getColor(R.color.plane));
@@ -66,6 +82,10 @@ public class MainActivity extends Activity {
         s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // The history page lives in assets. Asset URLs are nominally exempt
+        // from the file-access switch, but saying so outright costs nothing
+        // and removes a per-version surprise.
+        s.setAllowFileAccess(true);
         web.setWebViewClient(new Client());
         root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -77,14 +97,266 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        if (host().isEmpty()) {
+        SyncJob.schedule(this);
+
+        if (!Prefs.configured(this)) {
             showSetup("Cube の IP アドレスを入れてください。");
         } else {
-            load();
+            chooseView();
         }
     }
 
+    // -- which page to show ------------------------------------------------
+
+    /** Ask the Cube whether it is there, then load the matching page. */
+    private void chooseView() {
+        final String base = Prefs.baseUrl(this);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final boolean home = Cube.reachable(base);
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (home) {
+                            loadLive();
+                        } else {
+                            loadHistory();
+                        }
+                    }
+                });
+                if (home) {
+                    Sync.run(getApplicationContext());
+                }
+            }
+        }, "cubej1-probe").start();
+    }
+
+    private void loadLive() {
+        offline = false;
+        // The bridge belongs to the bundled page only; the Cube's page has
+        // no business reaching local storage.
+        web.removeJavascriptInterface(BRIDGE_NAME);
+        loadFailed = false;
+        web.loadUrl(Prefs.baseUrl(this) + "/");
+    }
+
+    private void loadHistory() {
+        offline = true;
+        web.addJavascriptInterface(bridge, BRIDGE_NAME);
+        loadFailed = false;
+        setup.setVisibility(View.GONE);
+        web.loadUrl(HISTORY_PAGE);
+    }
+
+    private class Client extends WebViewClient {
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+            return false;
+        }
+
+        @Override
+        public void onPageStarted(WebView v, String u, android.graphics.Bitmap icon) {
+            loadFailed = false;
+        }
+
+        @Override
+        public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
+            if (!r.isForMainFrame()) {
+                return; // a failed poll is not a failed page
+            }
+            if (offline) {
+                return; // the asset page has nothing to fail against
+            }
+            loadFailed = true;
+            // Falling back is better than an error screen: the phone still
+            // holds everything up to the last visit.
+            loadHistory();
+            toast("Cube に届かないので履歴を表示します（" + e.getErrorCode() + "）");
+        }
+
+        @Override
+        public void onPageFinished(WebView v, String u) {
+            if (!loadFailed) {
+                setup.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    // -- menu --------------------------------------------------------------
+
+    @Override
+    public void onBackPressed() {
+        if (setup.getVisibility() == View.VISIBLE) {
+            super.onBackPressed();
+            return;
+        }
+        if (web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+        showMenu();
+    }
+
+    private void showMenu() {
+        final String[] items = {
+                "今すぐ同期",
+                offline ? "ライブ表示を試す" : "履歴を見る",
+                "CSV を書き出す（30分ごと）",
+                "CSV を書き出す（分ごと）",
+                "接続先を変更",
+                "閉じる",
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("電力モニタ")
+                .setItems(items, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        switch (which) {
+                            case 0: syncNow(); break;
+                            case 1: if (offline) { chooseView(); } else { loadHistory(); } break;
+                            case 2: exportCsv(REQ_CSV_SLOT, "halfhour"); break;
+                            case 3: exportCsv(REQ_CSV_MINUTE, "minute"); break;
+                            case 4: showSetup("接続先の IP とポートを変更できます。"); break;
+                            default: finish(); break;
+                        }
+                    }
+                })
+                .setNegativeButton("キャンセル", null)
+                .show();
+    }
+
+    private void syncNow() {
+        toast("同期しています...");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final Sync.Result r = Sync.run(getApplicationContext());
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast(r.describe());
+                        if (r.outcome == Sync.Outcome.OK && offline) {
+                            web.reload();
+                        }
+                    }
+                });
+            }
+        }, "cubej1-sync-now").start();
+    }
+
+    // -- CSV ---------------------------------------------------------------
+
+    /** Let the system picker choose where it goes: no storage permission. */
+    private void exportCsv(int request, String kind) {
+        String stamp = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("text/csv");
+        i.putExtra(Intent.EXTRA_TITLE, "cubej1-" + kind + "-" + stamp + ".csv");
+        startActivityForResult(i, request);
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        if (request != REQ_CSV_SLOT && request != REQ_CSV_MINUTE) {
+            return;
+        }
+        final Uri uri = data.getData();
+        final boolean slots = request == REQ_CSV_SLOT;
+        toast("書き出しています...");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String msg;
+                try {
+                    OutputStream os = getContentResolver().openOutputStream(uri);
+                    if (os == null) {
+                        throw new java.io.IOException("書き込み先を開けません");
+                    }
+                    int rows;
+                    try {
+                        rows = slots ? store.writeSlotCsv(os) : store.writeMinuteCsv(os);
+                    } finally {
+                        os.close();
+                    }
+                    msg = rows + " 行を書き出しました";
+                } catch (Exception e) {
+                    msg = "書き出しに失敗しました: " + e.getMessage();
+                }
+                final String done = msg;
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast(done);
+                    }
+                });
+            }
+        }, "cubej1-csv").start();
+    }
+
+    private void toast(String m) {
+        Toast.makeText(this, m, Toast.LENGTH_LONG).show();
+    }
+
     // -- setup screen ------------------------------------------------------
+
+    /**
+     * Pull a host and an optional port out of whatever was typed.
+     *
+     * The field asks for an address, but the obvious thing to paste is the
+     * whole URL from the browser's address bar. Accept both rather than
+     * building "http://http://10.0.0.2:8080:8080/" out of it.
+     */
+    static String[] parseHost(String raw) {
+        String h = raw == null ? "" : raw.trim();
+        int scheme = h.indexOf("://");
+        if (scheme >= 0) {
+            h = h.substring(scheme + 3);
+        }
+        int slash = h.indexOf('/');
+        if (slash >= 0) {
+            h = h.substring(0, slash);
+        }
+        String port = null;
+        if (h.startsWith("[")) {              // [fe80::1]:8080
+            int close = h.indexOf(']');
+            if (close > 0) {
+                String rest = h.substring(close + 1);
+                h = h.substring(0, close + 1);
+                if (rest.startsWith(":")) {
+                    port = rest.substring(1);
+                }
+            }
+        } else {
+            int colon = h.indexOf(':');
+            if (colon >= 0) {
+                port = h.substring(colon + 1);
+                h = h.substring(0, colon);
+            }
+        }
+        if (port != null) {
+            port = port.trim();
+            if (port.isEmpty()) {
+                port = null;
+            }
+        }
+        return new String[]{h.trim(), port};
+    }
+
+    private void refreshPreview() {
+        String[] parsed = parseHost(hostField.getText().toString());
+        String h = parsed[0];
+        String p = parsed[1] != null ? parsed[1] : portField.getText().toString().trim();
+        if (p.isEmpty()) {
+            p = String.valueOf(Prefs.DEFAULT_PORT);
+        }
+        urlPreview.setText(h.isEmpty() ? "接続先: (未設定)" : "接続先: http://" + h + ":" + p + "/");
+    }
 
     private LinearLayout buildSetup() {
         setup = new LinearLayout(this);
@@ -142,7 +414,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 save();
-                load();
+                chooseView();
             }
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -163,154 +435,17 @@ public class MainActivity extends Activity {
         return setup;
     }
 
-    /**
-     * Pull a host and an optional port out of whatever was typed.
-     *
-     * The field asks for an address, but the obvious thing to paste is the
-     * whole URL from the browser's address bar. Accept both rather than
-     * building "http://http://10.0.0.2:8080:8080/" out of it.
-     */
-    static String[] parseHost(String raw) {
-        String h = raw == null ? "" : raw.trim();
-        int scheme = h.indexOf("://");
-        if (scheme >= 0) {
-            h = h.substring(scheme + 3);
-        }
-        int slash = h.indexOf('/');
-        if (slash >= 0) {
-            h = h.substring(0, slash);
-        }
-        String port = null;
-        if (h.startsWith("[")) {              // [fe80::1]:8080
-            int close = h.indexOf(']');
-            if (close > 0) {
-                String rest = h.substring(close + 1);
-                h = h.substring(0, close + 1);
-                if (rest.startsWith(":")) {
-                    port = rest.substring(1);
-                }
-            }
-        } else {
-            int colon = h.indexOf(':');
-            if (colon >= 0) {
-                port = h.substring(colon + 1);
-                h = h.substring(0, colon);
-            }
-        }
-        if (port != null) {
-            port = port.trim();
-            if (port.isEmpty()) {
-                port = null;
-            }
-        }
-        return new String[]{h.trim(), port};
-    }
-
-    private void refreshPreview() {
-        String[] parsed = parseHost(hostField.getText().toString());
-        String h = parsed[0];
-        String p = parsed[1] != null ? parsed[1] : portField.getText().toString().trim();
-        if (p.isEmpty()) {
-            p = String.valueOf(DEFAULT_PORT);
-        }
-        urlPreview.setText(h.isEmpty() ? "接続先: (未設定)" : "接続先: http://" + h + ":" + p + "/");
-    }
-
     private void showSetup(String message) {
         setupMessage.setText(message);
-        hostField.setText(host());
-        portField.setText(String.valueOf(port()));
+        hostField.setText(Prefs.host(this));
+        portField.setText(String.valueOf(Prefs.port(this)));
         refreshPreview();
         setup.setVisibility(View.VISIBLE);
     }
 
-    // -- loading -----------------------------------------------------------
-
-    private void load() {
-        if (host().isEmpty()) {
-            showSetup("Cube の IP アドレスを入れてください。");
-            return;
-        }
-        loadFailed = false;
-        web.loadUrl(url());
-    }
-
-    private String url() {
-        return "http://" + host() + ":" + port() + "/";
-    }
-
-    private class Client extends WebViewClient {
-        @Override
-        public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-            return false; // the dashboard has no outbound links; keep it all in-app
-        }
-
-        @Override
-        public void onPageStarted(WebView v, String u, android.graphics.Bitmap icon) {
-            loadFailed = false;
-        }
-
-        @Override
-        public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
-            if (!r.isForMainFrame()) {
-                return; // a failed poll is not a failed page
-            }
-            loadFailed = true;
-            showSetup("つながりません。\n\n" + url() + "\n"
-                    + e.getErrorCode() + " " + e.getDescription() + "\n\n"
-                    + "同じスマホのブラウザで上の URL が開けるなら、"
-                    + "入力が違います。開けないなら Cube 側です。");
-        }
-
-        @Override
-        public void onPageFinished(WebView v, String u) {
-            if (!loadFailed) {
-                setup.setVisibility(View.GONE);
-            }
-        }
-    }
-
-    // -- back button -------------------------------------------------------
-
-    @Override
-    public void onBackPressed() {
-        if (setup.getVisibility() == View.VISIBLE) {
-            super.onBackPressed();
-            return;
-        }
-        if (web.canGoBack()) {
-            web.goBack();
-            return;
-        }
-        // No chrome means no obvious way back to the settings, so the back
-        // button is the way in.
-        new AlertDialog.Builder(this)
-                .setTitle("電力モニタ")
-                .setPositiveButton("閉じる", (d, which) -> finish())
-                .setNeutralButton("接続先を変更", (d, which) ->
-                        showSetup("接続先の IP とポートを変更できます。"))
-                .setNegativeButton("キャンセル", null)
-                .show();
-    }
-
-    // -- preferences -------------------------------------------------------
-
-    private SharedPreferences prefs() {
-        return getSharedPreferences(PREFS, MODE_PRIVATE);
-    }
-
-    private String host() {
-        return prefs().getString(KEY_HOST, "").trim();
-    }
-
-    private int port() {
-        return prefs().getInt(KEY_PORT, DEFAULT_PORT);
-    }
-
     private void save() {
         String[] address = parseHost(hostField.getText().toString());
-        String h = address[0];
-        int p = DEFAULT_PORT;
+        int p = Prefs.DEFAULT_PORT;
         // A port pasted into the address field wins over the port box: it is
         // the more specific thing the person just typed.
         String raw = address[1] != null ? address[1] : portField.getText().toString().trim();
@@ -324,7 +459,7 @@ public class MainActivity extends Activity {
                 // keep the default rather than refusing to move on
             }
         }
-        prefs().edit().putString(KEY_HOST, h).putInt(KEY_PORT, p).apply();
+        Prefs.setAddress(this, address[0], p);
     }
 
     private int dp(int value) {

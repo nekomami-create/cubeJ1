@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>履歴</title>
+<style>
+/* Same tokens as the Cube's dashboard, so moving between the two does not
+   feel like moving between two apps. */
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --base:#c3c2b7;
+  --s1:#2a78d6; --s1wash:rgba(42,120,214,.12); --s1soft:rgba(42,120,214,.45);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#f2f2f0; --ink2:#a8a7a2; --muted:#7c7b76;
+    --grid:#2b2b29; --base:#45443f;
+    --s1:#5a9ce8; --s1wash:rgba(90,156,232,.16); --s1soft:rgba(90,156,232,.5);
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--plane); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  -webkit-text-size-adjust:100%;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+.wrap{max-width:560px;margin:0 auto;padding:18px 16px 48px}
+h1{font-size:19px;margin:4px 0 2px}
+.sub{font-size:12px;color:var(--muted);margin-bottom:18px;line-height:1.6}
+.card{background:var(--surface);border:1px solid var(--grid);border-radius:12px;padding:14px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 12px}
+.empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 8px;line-height:1.8}
+
+/* day list */
+.days{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+.day{flex:0 0 auto;min-width:82px;background:var(--plane);border:1px solid var(--grid);
+     border-radius:10px;padding:9px 10px;text-align:left;cursor:pointer;
+     font:inherit;color:inherit}
+.day.sel{border-color:var(--s1);background:var(--s1wash)}
+.day .d{font-size:11px;color:var(--muted)}
+.day .k{font-size:17px;font-weight:600;margin-top:3px;font-variant-numeric:tabular-nums}
+.day .k small{font-size:10px;color:var(--muted);font-weight:500;margin-left:2px}
+.day .partial{color:var(--muted);font-size:10px;margin-top:2px}
+
+/* half-hour bars */
+.bars{display:flex;align-items:flex-end;gap:1px;height:150px;margin-top:4px}
+.bar{flex:1 1 0;background:var(--s1);border-radius:1px 1px 0 0;min-height:1px}
+.bar.none{background:var(--grid)}
+.axis{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:6px}
+.peak{font-size:11px;color:var(--muted);margin-bottom:6px}
+.tot{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;
+     padding-top:12px;border-top:1px solid var(--grid)}
+.tot .lab{font-size:12px;color:var(--ink2)}
+.tot .val{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.tot .val small{font-size:12px;color:var(--muted);font-weight:500;margin-left:3px}
+footer{font-size:11px;color:var(--muted);text-align:center;line-height:1.8;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>履歴</h1>
+  <div class="sub" id="status">読み込み中...</div>
+
+  <div class="card">
+    <h2>日ごと</h2>
+    <div class="days" id="days"></div>
+  </div>
+
+  <div class="card" id="dayCard" hidden>
+    <h2 id="dayTitle">30分ごと</h2>
+    <div class="peak" id="peak"></div>
+    <div class="bars" id="bars"></div>
+    <div class="axis"><span>0時</span><span>6時</span><span>12時</span><span>18時</span><span>24時</span></div>
+    <div class="tot"><span class="lab">この日の合計</span><span class="val" id="dayTotal">--<small>kWh</small></span></div>
+  </div>
+
+  <div class="card" id="emptyCard" hidden>
+    <div class="empty">
+      まだ履歴がありません。<br>
+      家の Wi-Fi に入って「今すぐ同期」を実行してください。
+    </div>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+function api(name, arg) {
+  try {
+    return JSON.parse(arg === undefined ? Meter[name]() : Meter[name](arg));
+  } catch (e) {
+    return null;
+  }
+}
+
+function ago(ms) {
+  if (!ms) return "まだ一度も同期していません";
+  var s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 90) return "さきほど同期";
+  if (s < 3600) return Math.floor(s / 60) + "分前に同期";
+  if (s < 86400) return Math.floor(s / 3600) + "時間前に同期";
+  return Math.floor(s / 86400) + "日前に同期";
+}
+
+function fmt(v, d) {
+  if (v === null || v === undefined || isNaN(v)) return "--";
+  return Number(v).toFixed(d === undefined ? 1 : d);
+}
+
+var selected = null;
+
+function renderDays(days) {
+  var box = document.getElementById("days");
+  box.innerHTML = "";
+  days.forEach(function (d) {
+    var b = document.createElement("button");
+    b.className = "day" + (d.date === selected ? " sel" : "");
+    b.innerHTML = '<div class="d">' + d.date.slice(5).replace("-", "/") + "</div>"
+      + '<div class="k">' + fmt(d.total_kwh, 1) + "<small>kWh</small></div>"
+      + (d.complete ? "" : '<div class="partial">欠けあり</div>');
+    b.onclick = function () { select(d.date); };
+    box.appendChild(b);
+  });
+}
+
+function select(date) {
+  selected = date;
+  var d = api("day", date);
+  var card = document.getElementById("dayCard");
+  if (!d || !d.use_kwh) { card.hidden = true; return; }
+
+  var vals = d.use_kwh;
+  var known = vals.filter(function (v) { return v !== null; });
+  var max = known.length ? Math.max.apply(null, known) : 1;
+  if (max <= 0) max = 1;
+
+  var bars = document.getElementById("bars");
+  bars.innerHTML = "";
+  for (var i = 0; i < 48; i++) {
+    var v = vals[i];
+    var el = document.createElement("div");
+    el.className = "bar" + (v === null || v === undefined ? " none" : "");
+    el.style.height = (v === null || v === undefined ? 2 : Math.max(2, (v / max) * 150)) + "px";
+    el.title = String(Math.floor(i / 2)).padStart(2, "0") + ":" + (i % 2 ? "30" : "00")
+      + "  " + fmt(v, 3) + " kWh";
+    bars.appendChild(el);
+  }
+
+  var total = known.reduce(function (a, b) { return a + b; }, 0);
+  document.getElementById("dayTitle").textContent = date + " の30分ごと";
+  document.getElementById("peak").textContent = "最大 " + fmt(max, 3) + " kWh / 30分";
+  document.getElementById("dayTotal").innerHTML = fmt(total, 1) + "<small>kWh</small>";
+  card.hidden = false;
+
+  renderDays(lastDays);
+}
+
+var lastDays = [];
+
+function load() {
+  var st = api("status") || {};
+  document.getElementById("status").textContent =
+    ago(st.last_sync) + " ・ " + (st.days || 0) + "日分 / " + (st.minutes || 0) + "件";
+  document.getElementById("foot").textContent =
+    st.host ? "Cube " + st.host + " から取得" : "";
+
+  var r = api("days", 60);
+  lastDays = (r && r.days) || [];
+  document.getElementById("emptyCard").hidden = lastDays.length > 0;
+  renderDays(lastDays);
+  if (lastDays.length) {
+    select(lastDays[0].date);
+  }
+}
+
+load();
+</script>
+</body>
+</html>
