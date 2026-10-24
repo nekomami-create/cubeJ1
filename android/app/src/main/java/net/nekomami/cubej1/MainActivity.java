@@ -152,10 +152,17 @@ public class MainActivity extends Activity {
      */
     private void chooseView(final boolean announce) {
         final String base = Prefs.baseUrl(this);
+        if (announce) {
+            // The longer probe can take the best part of twenty seconds, and
+            // a button that does nothing visible for that long reads as broken.
+            toast("Cube に接続しています...");
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final boolean home = Cube.reachable(base);
+                final boolean home = announce
+                        ? Cube.reachableAsked(base)
+                        : Cube.reachable(base);
                 ui.post(new Runnable() {
                     @Override
                     public void run() {

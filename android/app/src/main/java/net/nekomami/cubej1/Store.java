@@ -238,6 +238,30 @@ final class Store extends SQLiteOpenHelper {
         return new JSONObject().put("samples", out).toString();
     }
 
+    /**
+     * Per-minute samples for one local day, as the viewer wants them.
+     *
+     * The day boundary is worked out here rather than in JavaScript: the
+     * dates come from the Cube in its own local time and the browser's own
+     * notion of a day has bitten enough people.
+     */
+    String minutesForDateJson(String date) throws JSONException {
+        String[] p = date.split("-");
+        if (p.length != 3) {
+            return "{\"samples\":[]}";
+        }
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        try {
+            c.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2]),
+                    0, 0, 0);
+        } catch (NumberFormatException e) {
+            return "{\"samples\":[]}";
+        }
+        c.set(java.util.Calendar.MILLISECOND, 0);
+        long from = c.getTimeInMillis() / 1000L;
+        return minutesJson(from, from + 86400L);
+    }
+
     long newestMinuteTs() {
         Cursor c = getReadableDatabase().rawQuery("SELECT MAX(ts) FROM minute", null);
         try {

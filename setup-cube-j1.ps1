@@ -22,7 +22,10 @@ param(
     [int]$HttpPort    = 8080,
     [int]$HubPort     = 11883,
     [string]$DeviceId = 'cubej1',
-    [int]$HistorySize = 1440
+    # 5 days of per-minute samples. Roughly 1.8MB of RAM on a 1GB device,
+    # and the ring is written to disk less often as it grows so the eMMC
+    # sees about the same bytes per day as it did at one day.
+    [int]$HistorySize = 7200
 )
 
 $ErrorActionPreference = 'Stop'

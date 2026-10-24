@@ -51,6 +51,15 @@ final class Bridge {
     }
 
     @JavascriptInterface
+    public String minutesForDate(String date) {
+        try {
+            return store.minutesForDateJson(date);
+        } catch (Exception e) {
+            return "{\"samples\":[]}";
+        }
+    }
+
+    @JavascriptInterface
     public String status() {
         try {
             JSONObject o = new JSONObject();

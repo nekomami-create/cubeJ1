@@ -247,6 +247,27 @@ adb push tariff.json /data/local/tariff.json
 .\setup-cube-j1.ps1 -SkipFormat
 ```
 
+### 稼働中の Cube の保持期間を変える
+
+USB を作り直さずに済ませたいときは、`config.json` を直接書き換えて
+`meter_hub` を入れ直す。既定は 7200（1分 x 5日）。
+
+```bash
+adb connect <CubeのIP>:5555
+adb shell "sed -i 's/\"history_size\": *[0-9]*/\"history_size\": 7200/' /data/local/config.json"
+adb shell stop meter_hub
+adb shell start meter_hub
+adb shell head -3 /data/local/meter_hub.log
+```
+
+起動ログに `history=7200 ≈5.0d ring_save=3000s` のように出る。
+
+長くするほどメモリを食うが、1分間隔なら 7200 点でおよそ 1.8MB。リングは
+まるごと書き直す方式なので、長くすると 1 回あたりの書き込みも増える。その
+ぶん保存間隔を比例して延ばしてあるので、eMMC に書く量は 1 日あたりほぼ
+変わらない。代わりに、予期せぬ再起動で失う分は増える（7200 点なら最大
+50 分）。30 分値は別ファイルで変更時のみ書くので、この影響を受けない。
+
 ## Wi-Fi の接続先を変える・足す
 
 Cube の Wi-Fi は WPA-PSK です。周波数帯は仕様上 2.4GHz（b/g/n）と 5GHz（ac）の両対応。

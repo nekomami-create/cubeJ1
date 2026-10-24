@@ -54,7 +54,12 @@ DEFAULT_HISTORY    = 1440    # 24h at one sample per minute
 DAILY_PATH    = "/data/local/meter_daily.json"
 DAILY_KEEP    = 400          # days
 RING_PATH     = "/data/local/meter_ring.json"
-RING_SAVE_SEC = 600          # per-minute samples survive a restart, 10 min stale at most
+# The ring is rewritten whole, so a longer window costs proportionally more
+# writes. Scale the interval with the length to hold the bytes-per-day
+# roughly constant on the eMMC; the cost is that more minutes are lost if
+# the Cube restarts unexpectedly. The half-hour record is unaffected — it
+# lives in its own file and is written when it changes.
+RING_SAVE_BASE_SEC = 600     # at the 1440-sample default: 10 min stale at most
 
 # Electricity price, used only by the dashboard to show an estimate.
 # Built in: TEPCO 電化上手 at 7-10kVA, checked on tepco.co.jp on 2026-09-13.
@@ -502,12 +507,21 @@ def restore_state(state):
                 state.days[str(d)] = kwh
     ring = load_json(RING_PATH)
     if isinstance(ring, list):
-        cutoff = time.time() - 86400
+        # Follow the configured window, not a fixed day: with history_size
+        # raised past 1440 a hardcoded 24h would throw away most of the ring
+        # on every restart, which is exactly what the larger window is for.
+        # The deque's own maxlen keeps the count in bounds regardless.
+        span = state.history.maxlen * 60 + 300 if state.history.maxlen else 86400
+        cutoff = time.time() - span
         for sample in ring:
             if isinstance(sample, list) and len(sample) == 4 and sample[0] >= cutoff:
                 state.history.append(tuple(sample))
     log("restored %d day(s) of half-hour history, %d per-minute sample(s)"
         % (len(state.days), len(state.history)))
+
+def ring_save_sec(state):
+    n = state.history.maxlen or DEFAULT_HISTORY
+    return max(RING_SAVE_BASE_SEC, int(RING_SAVE_BASE_SEC * n / float(DEFAULT_HISTORY)))
 
 def persister(state):
     last_ring = time.time()
@@ -518,7 +532,7 @@ def persister(state):
             state.days_dirty = False
         if days is not None:
             save_json(DAILY_PATH, days)
-        if time.time() - last_ring >= RING_SAVE_SEC:
+        if time.time() - last_ring >= ring_save_sec(state):
             save_json(RING_PATH, [list(s) for s in state.get_history()])
             last_ring = time.time()
 
@@ -581,8 +595,8 @@ def main():
 
     state = State(history_len)
     restore_state(state)
-    log("=== meter_hub start (mqtt=127.0.0.1:%d http=0.0.0.0:%d history=%d) ==="
-        % (hub_port, http_port, history_len))
+    log("=== meter_hub start (mqtt=127.0.0.1:%d http=0.0.0.0:%d history=%d ≈%.1fd ring_save=%ds) ==="
+        % (hub_port, http_port, history_len, history_len / 1440.0, ring_save_sec(state)))
 
     t_mqtt = threading.Thread(target=serve_forever,
                               args=("127.0.0.1", hub_port, handle_mqtt_client, state, "mqtt"))

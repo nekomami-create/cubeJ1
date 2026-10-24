@@ -18,14 +18,31 @@ final class Cube {
 
     /** Short on purpose: away from home this fails on every attempt. */
     private static final int PROBE_TIMEOUT_MS = 2500;
+    /**
+     * Used when someone asked to go to the live view and is watching for it.
+     * The short probe is right for startup, where failing is the expected
+     * answer, but wrong here: a phone that has just joined the Wi-Fi, or a
+     * Cube busy answering a history request, can take several seconds to
+     * reply, and giving up at 2.5s reports it as unreachable when it is not.
+     */
+    private static final int ASK_TIMEOUT_MS = 9000;
     private static final int READ_TIMEOUT_MS = 20000;
     private static final int MAX_BODY = 8 * 1024 * 1024;
 
     private Cube() { }
 
     static boolean reachable(String base) {
+        return reachable(base, PROBE_TIMEOUT_MS);
+    }
+
+    /** Waits longer, and tries twice, for a check someone is waiting on. */
+    static boolean reachableAsked(String base) {
+        return reachable(base, ASK_TIMEOUT_MS) || reachable(base, ASK_TIMEOUT_MS);
+    }
+
+    static boolean reachable(String base, int timeoutMs) {
         try {
-            return "ok".equals(get(base, "/healthz", PROBE_TIMEOUT_MS).trim());
+            return "ok".equals(get(base, "/healthz", timeoutMs).trim());
         } catch (Exception e) {
             return false;
         }
