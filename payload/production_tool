@@ -79,8 +79,10 @@ chmod 644 /system/etc/init/ndblued.rc /system/etc/init/blueye.rc
 # for a pairing that can never complete. It cannot be disabled - gndctrl is also the
 # network manager that associates wlan0 at boot, and the USB auto-run trigger. So
 # instead, reject every listening port on any p2p interface, in both address
-# families (see the ip6tables patch just below).
-sed 's|^POLICY=.*|POLICY="p2p+:5555,p2p+:8080,p2p+:8883,p2p+:80,p2p+:443"|' \
+# families (see the ip6tables patch just below). 8090 is kindash, the Kindle
+# screen that lives in its own repository; it is listed even on a Cube that
+# doesn't run it, so re-running this setup never reopens it.
+sed 's|^POLICY=.*|POLICY="p2p+:5555,p2p+:8080,p2p+:8883,p2p+:80,p2p+:443,p2p+:8090"|' \
     /data/local/stock_iptables_firewall.conf > /system/etc/.fw.tmp
 if [ -s /system/etc/.fw.tmp ]; then
     mv /system/etc/.fw.tmp /system/etc/iptables_firewall.conf

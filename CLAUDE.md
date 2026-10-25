@@ -37,9 +37,14 @@ Cube は30分値を400日、アプリは端末に貯めるが、それ以上の�
 **稼働中。** 2026-09-13 に Bルートが開通し、実測値が流れている。
 
 - リポジトリは `nekomami-create/cubeJ1`（public）、既定ブランチ `main`
-- Cube は `192.168.1.40`、LED 緑点灯、USB なしで自立動作。最後の再起動は 2026-09-14
+- Cube は `192.168.1.40`、LED 緑点灯、USB なしで自立動作。最後の再起動は 2026-10-25
+  （kindash の rc を読ませるため。再起動後に4サービスとファイアウォール6本ずつを確認）
 - `/data/local/` の `meter_hub.py` / `mqtt_bridge.py` / `ble_monitor.py` と init の rc は
   **リポジトリの `payload/` とバイト単位で一致**（2026-10-24 に md5 で確認）
+- **4つ目のサービスとして Kindle 用の画面 `kindash` が動いている**（2026-10-25〜）。
+  コードはこのリポジトリではなく、オーナーの PC の `C:\Claude\kindash`（git、GitHub には未登録）。
+  Cube 上は `/data/local/kindash/` と `/system/etc/init/kindash.rc`。md5 はそちらの `cube/` と突き合わせる。
+  ファイアウォールの POLICY に `p2p+:8090` を足した（`production_tool` も同じにしてある）
 - `config.json` は本物の Bルート認証情報入り（chmod 600）、`history_size` は 7200
 - アプリは v1.4（versionCode 7）。エミュレータで実データを使って確認済み、オーナーの実機では未確認
 
@@ -62,6 +67,7 @@ md5 を突き合わせる（`adb shell md5sum /data/local/*.py` と `md5sum payl
 | Bluetooth | **常に Cube（ble_monitor）が握る**。純正 ndblued / blueye は無効化、退避あり |
 | BLE の記録 | 機器ごとの詳細は持たない（いま見えている分だけ）。種類ごとの台数を28日 |
 | 外からのライブ表示 | やらない。アプリが家で貯めた履歴を外で見る |
+| Kindle 用の画面（kindash） | Cube で描いて 8090 で配る（2026-10-25 オーナー依頼）。meter_hub には手を入れず別サービスにし、電力は 8080 の API を読むだけ |
 | 電気代 | 東京電力 電化上手、7〜10kVA、検針日22日（オーナーに確認）。全電化住宅割引は 2025-03-31 で終了 |
 
 ## 触ってはいけないもの・落とし穴
@@ -112,6 +118,9 @@ adb は `:::5555` で待ち、P2P AP の相手には IPv6 リンクローカル�
 - 新しい `.rc` は**再起動後**に init が読む。稼働中に `start <名前>` しても効かない
 - Cube の時計は UTC、メーターは日本時間。30分履歴の日付は +9時間で決める
 - `brcm_patchram_plus2` は自分でデーモン化する。`$!` を kill しても残るので、名前で探して kill する
+- `ps` には引数が出ない。`python` のプロセス（meter_hub / mqtt_bridge / ble_monitor / kindash）は
+  `/proc/<pid>/cmdline` で見分けてから kill する。2026-10-25、kindash の入れ替えで
+  `ps | grep kindash.py` が何にも当たらず、古いのが残って新しいのが起動に失敗した
 - `wpa_cli` の STATUS / SCAN は起動直後にタイムアウトしがち。`iw dev wlan0 scan ssid <名前>` と
   `iw dev wlan0 link` は動く
 - -80 dBm 級の弱い Wi-Fi では adb が頻繁に `offline` になる（TCP 5555 は受けるが CNXN に応えない）

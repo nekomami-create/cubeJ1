@@ -249,6 +249,33 @@ Cube の Bluetooth（BCM4345C0、BT 4.1）で、周りの機器が出してい�
 退避してあり、戻せます（「元に戻す」参照）。純正クラウドは終了しているので、
 純正の Bluetooth はもともと何もしていません。
 
+## Kindle 用の画面（kindash）
+
+脱獄した Kindle 3 を、天気と電力の1画面の表示機にしています。Cube が15分ごとに
+600×800・8bit グレーの PNG を描き、Kindle がそれを取ってきて全画面に出します
+（2026-10-25 から）。コードはこのリポジトリではなく、別の kindash リポジトリにあります
+（このリポジトリの payload からは入りません）。
+
+- `meter_hub` には手を入れず、4つ目の init サービス `kindash` として動く。
+  電力は `127.0.0.1:8080` の `/api`・`/api/history`・`/api/daily` を読むだけ
+- 天気（気象庁・Open-Meteo）は HTTPS なので `/system/bin/curl` に任せる。
+  Cube の CA が古く Open-Meteo を検証できないため、新しい `cacert.pem` を一緒に置いている
+- `GET http://<CubeのIP>:8090/screen.png` で配る。ペアリング AP 側は 8090 も塞いである
+
+```
+/data/local/kindash/           本体（kindash.py、文字と天気マークの素材、cacert.pem、ログ）
+/system/etc/init/kindash.rc    init サービス定義（644）
+```
+
+```sh
+adb shell stop kindash     # 止める
+adb shell start kindash    # 動かす
+adb shell tail /data/local/kindash/kindash.log
+```
+
+`ps` には引数が出ないので、`python` のプロセスがどれかは `/proc/<pid>/cmdline` で
+見分けます（`meter_hub`・`mqtt_bridge`・`ble_monitor` も同じ `python`）。
+
 ## 設定を変える
 
 ```powershell
@@ -338,6 +365,7 @@ LED に触れないので、上の表の表示がそのまま見えます。
 | 純正の mosquitto（8883）と nginx（80/443）の LAN 側 | **そのまま**（2026-09-14 オーナー判断。実害はない） |
 | ペアリング AP（`CubeJ-<MAC下6桁>`）側の全待受ポート | **塞いである**（IPv4/IPv6 とも） |
 | ダッシュボード | 平文 HTTP。家庭内 LAN だけで使う前提 |
+| Kindle 用の画面（kindash、8090）の LAN 側 | 開けたまま。平文 HTTP で PNG を配るだけ |
 
 LAN 側の adb が開いているので、自宅LAN に入れる人は root シェルを取れ、
 Wi-Fi のパスワードと Bルート認証情報が読めます。塞ぐと管理用の adb も閉じ、
@@ -353,13 +381,16 @@ adb まで届くので、電波の届く範囲の第三者が root を取れる�
 `/system/etc/iptables_firewall.conf` の `POLICY` を読む、毎起動の oneshot）で塞いでいます。
 
 ```
-POLICY="p2p+:5555,p2p+:8080,p2p+:8883,p2p+:80,p2p+:443"
+POLICY="p2p+:5555,p2p+:8080,p2p+:8883,p2p+:80,p2p+:443,p2p+:8090"
 ```
+
+8090 は Kindle 用の画面（kindash、下の「Kindle 用の画面」）です。動かしていない Cube でも
+入れておくので、セットアップをやり直しても開きません。
 
 純正スクリプトは `iptables` しか叩かず、IPv6 で丸ごと迂回できたので、同じ規則を
 `ip6tables` にも入れる2行を純正スクリプトに足しています（退避した純正を常に入力にするので、
-再実行しても積み重なりません）。再起動をまたいで IPv4 5本 / IPv6 5本が入っていることを
-確認済みです。AP の電波自体は出続けます。
+再実行しても積み重なりません）。再起動をまたいで IPv4 6本 / IPv6 6本が入っていることを
+確認済みです（2026-10-25、8090 を足したあと）。AP の電波自体は出続けます。
 
 ### gndctrl は無効化しない
 
@@ -444,6 +475,7 @@ adb shell cp /data/local/stock_blueye.rc /system/etc/init/blueye.rc
 adb shell cp /data/local/stock_iptables_firewall.conf /system/etc/iptables_firewall.conf
 adb shell cp /data/local/stock_iptables_firewall.sh /usr/sbin/iptables_firewall.sh
 adb shell rm /system/etc/init/meter_hub.rc /system/etc/init/mqtt_ha_bridge.rc /system/etc/init/ble_monitor.rc
+adb shell rm -f /system/etc/init/kindash.rc       # Kindle 用の画面（入れている場合）
 adb shell mount -o ro,remount /
 adb shell setprop persist.adb.tcp.port ""     # adb の常時開放をやめる
 adb reboot
