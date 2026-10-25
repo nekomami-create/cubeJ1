@@ -42,8 +42,10 @@ Cube は30分値を400日、アプリは端末に貯めるが、それ以上の�
 - `/data/local/` の `meter_hub.py` / `mqtt_bridge.py` / `ble_monitor.py` と init の rc は
   **リポジトリの `payload/` とバイト単位で一致**（2026-10-24 に md5 で確認）
 - **4つ目のサービスとして Kindle 用の画面 `kindash` が動いている**（2026-10-25〜）。
-  コードはこのリポジトリではなく、オーナーの PC の `C:\Claude\kindash`（git、GitHub には未登録）。
+  コードはこのリポジトリではなく [nekomami-create/kindash](https://github.com/nekomami-create/kindash)
+  （public。オーナーの PC では `C:\Claude\kindash`）。
   Cube 上は `/data/local/kindash/` と `/system/etc/init/kindash.rc`。md5 はそちらの `cube/` と突き合わせる。
+  地点を書いた `kindash_config.json` だけは、家の場所なので kindash リポジトリに入れていない（Cube にだけある）
   ファイアウォールの POLICY に `p2p+:8090` を足した（`production_tool` も同じにしてある）
 - `config.json` は本物の Bルート認証情報入り（chmod 600）、`history_size` は 7200
 - アプリは v1.4（versionCode 7）。エミュレータで実データを使って確認済み、オーナーの実機では未確認

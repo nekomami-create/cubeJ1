@@ -253,8 +253,9 @@ Cube の Bluetooth（BCM4345C0、BT 4.1）で、周りの機器が出してい�
 
 脱獄した Kindle 3 を、天気と電力の1画面の表示機にしています。Cube が15分ごとに
 600×800・8bit グレーの PNG を描き、Kindle がそれを取ってきて全画面に出します
-（2026-10-25 から）。コードはこのリポジトリではなく、別の kindash リポジトリにあります
-（このリポジトリの payload からは入りません）。
+（2026-10-25 から）。コードはこのリポジトリではなく、
+[nekomami-create/kindash](https://github.com/nekomami-create/kindash) にあります
+（このリポジトリの payload からは入りません。入れ方もそちらの README）。
 
 - `meter_hub` には手を入れず、4つ目の init サービス `kindash` として動く。
   電力は `127.0.0.1:8080` の `/api`・`/api/history`・`/api/daily` を読むだけ
@@ -264,6 +265,7 @@ Cube の Bluetooth（BCM4345C0、BT 4.1）で、周りの機器が出してい�
 
 ```
 /data/local/kindash/           本体（kindash.py、文字と天気マークの素材、cacert.pem、ログ）
+                               と kindash_config.json（地点。kindash リポジトリには入れていない）
 /system/etc/init/kindash.rc    init サービス定義（644）
 ```
 
