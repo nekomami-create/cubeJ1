@@ -1,0 +1,10 @@
+[Unit]
+Description=Cube J1 の記録を lark に写す
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nekomami
+Environment=CUBEJ1_BACKUP_DIR=/srv/cubej1-backup
+ExecStart=/opt/cubej1/cubej1-backup.sh

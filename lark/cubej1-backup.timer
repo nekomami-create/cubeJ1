@@ -1,0 +1,12 @@
+[Unit]
+Description=Cube J1 の記録を毎晩 lark に写す
+
+[Timer]
+# 日本時間の 3:30。PC で Cube の adb（1台分しかない）を使っている人はいないし、
+# メーターの日付も変わっているので、前日の30分ごとの値が確定している。
+OnCalendar=*-*-* 03:30:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

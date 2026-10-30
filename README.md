@@ -31,6 +31,7 @@ Home Assistant も MQTT ブローカーも常時稼働のサーバーも要り�
 | `set-wifi.ps1` / `probe-wifi.ps1` | Wi-Fi の接続先を変える / 置き場所から見える AP を調べる |
 | `find-cube.ps1` | LAN 内の Cube を探す |
 | `recovery/` | ネットワークを失った Cube を USB から戻す（[recovery/README.md](recovery/README.md)） |
+| `lark/` | 家のサーバー lark で動かすもの（Cube の記録の毎晩のバックアップ） |
 
 ## 使い方
 
@@ -279,6 +280,46 @@ tailscale debug prefs | grep -A4 AdvertiseRoutes   # 192.168.1.40/32 が入っ�
 道を出すのは lark の `tailscale set --advertise-routes=0.0.0.0/0,::/0,192.168.1.40/32`、
 許可はテイルスケールの管理画面（login.tailscale.com の Machines → lark → Edit route settings）。
 lark では IP の転送を `/etc/sysctl.d/99-tailscale.conf` で有効にしてある。
+
+## 記録のバックアップ（lark）
+
+Cube の記録は Cube の内蔵ストレージにしか無いので、lark が毎晩 3:30（日本時間）に
+写しを取り、日付ごとのフォルダで60日分残します（2026-10-30 から）。1日分は 1MB 弱です。
+
+```
+lark:/srv/cubej1-backup/2026-10-30/   その日の写し（latest はいちばん新しい日を指す）
+  meter_daily.json   30分ごとの記録（最大400日）
+  meter_ring.json    1分ごとの記録
+  ble_hist.json      BLE の台数
+  kindash/           Kindle 画面の地点の設定（Cube にしか無いもの）
+  stock/             純正の設定の退避（「元に戻す」で使う）
+```
+
+Bルートの ID とパスワードが入った `config.json` は写しません（ほかの場所に広げないため）。
+仕組みは `lark/` にあり、lark では `/opt/cubej1/cubej1-backup.sh` を
+`cubej1-backup.timer` が動かします。
+
+**Cube の adb は同時に1台しかつながりません。** PC が Cube につないだままだと lark は入れず、
+5分おきに6回までやり直して諦めます。作業が終わったら PC 側で `adb disconnect` してください。
+
+```sh
+ssh lark journalctl -u cubej1-backup -n 5     # 最近の結果
+ssh lark sudo systemctl start cubej1-backup   # 今すぐ取る
+```
+
+### 写しから戻す
+
+Cube を入れ直したときなど。`meter_hub` を止めてから戻し、動かし直します。
+
+```sh
+scp -r lark:/srv/cubej1-backup/latest cube-backup
+adb connect <CubeのIP>:5555
+adb shell stop meter_hub
+adb push cube-backup/meter_daily.json cube-backup/meter_ring.json cube-backup/ble_hist.json /data/local/
+adb shell chmod 600 /data/local/meter_daily.json /data/local/meter_ring.json /data/local/ble_hist.json
+adb shell start meter_hub
+adb disconnect
+```
 
 ## Kindle 用の画面（kindash）
 
